@@ -41,9 +41,42 @@ jobs:
         args: release --clean
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Upload standalone installers
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: gh release upload "${GITHUB_REF_NAME}" install.sh install.ps1 --clobber
     
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: binaries
         path: dist/*.tar.gz
+
+  smoke-install:
+    name: Smoke install (${{ matrix.os }})
+    needs: release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - name: Install released UniForge (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL "https://github.com/neptaco/uniforge/releases/download/${GITHUB_REF_NAME}/install.sh" | \
+            UNIFORGE_VERSION="${GITHUB_REF_NAME}" UNIFORGE_INSTALL_DIR="$RUNNER_TEMP/uniforge-bin" sh
+          test "$("$RUNNER_TEMP/uniforge-bin/uniforge" --version)" = "${GITHUB_REF_NAME#v}"
+
+      - name: Install released UniForge (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:UNIFORGE_VERSION = $env:GITHUB_REF_NAME
+          $env:UNIFORGE_INSTALL_DIR = "$env:RUNNER_TEMP\uniforge-bin"
+          Invoke-RestMethod "https://github.com/neptaco/uniforge/releases/download/$env:GITHUB_REF_NAME/install.ps1" | Invoke-Expression
+          $expected = $env:GITHUB_REF_NAME.TrimStart('v')
+          $actual = & "$env:RUNNER_TEMP\uniforge-bin\uniforge.exe" --version
+          if ($actual -ne $expected) { throw "Expected $expected, got $actual" }
