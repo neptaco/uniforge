@@ -295,34 +295,36 @@ func (s *Server) handleResponse(conn *serverConnection, envelope rpcEnvelope) {
 		return
 	}
 
-	s.mu.Lock()
-	pending, ok := s.pending[requestID]
-	if ok && pending.targetConn != conn {
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Unlock()
-	if !ok {
-		return
-	}
-
 	if envelope.Error != nil {
+		pending := s.claimPending(requestID, conn)
+		if pending == nil {
+			return
+		}
 		_ = pending.clientConn.send(newErrorResponse(pending.clientRequestID, envelope.Error.Code, envelope.Error.Message, nil))
-		s.clearPending(requestID)
 		return
 	}
 
 	var toolResult unityToolResultEnvelope
 	if err := json.Unmarshal(envelope.Result, &toolResult); err != nil {
+		pending := s.claimPending(requestID, conn)
+		if pending == nil {
+			return
+		}
 		_ = pending.clientConn.send(newErrorResponse(pending.clientRequestID, InvalidRequest, "invalid Unity tool response", nil))
-		s.clearPending(requestID)
 		return
 	}
 
 	if toolResult.Pending {
 		s.mu.Lock()
-		pending.awaitingUnityContinuation = true
+		pending := s.pending[requestID]
+		if pending != nil && pending.targetConn == conn {
+			pending.awaitingUnityContinuation = true
+		}
 		s.mu.Unlock()
+		return
+	}
+	pending := s.claimPending(requestID, conn)
+	if pending == nil {
 		return
 	}
 
@@ -335,23 +337,22 @@ func (s *Server) handleResponse(conn *serverConnection, envelope rpcEnvelope) {
 		}
 	}
 	_ = pending.clientConn.send(newSuccessResponse(pending.clientRequestID, forwarded))
-	s.clearPending(requestID)
 }
 
 func (s *Server) handleUnityRegister(conn *serverConnection, params unityRegisterParams) {
+	s.mu.Lock()
+	existing := s.unityConns[params.ProjectID]
 	conn.kind = "unity"
 	conn.projectID = params.ProjectID
 	conn.projectName = params.ProjectName
 	conn.gitRoot = params.GitRoot
-	conn.tools = params.Tools
+	conn.tools = append([]ToolDefinition(nil), params.Tools...)
 	conn.schemaHash = ComputeSchemaHash(params.Tools)
-
-	s.mu.Lock()
-	if existing := s.unityConns[params.ProjectID]; existing != nil && existing != conn {
-		_ = existing.conn.Close()
-	}
 	s.unityConns[params.ProjectID] = conn
 	s.mu.Unlock()
+	if existing != nil && existing != conn {
+		_ = existing.conn.Close()
+	}
 
 	s.resumePendingRequests(params.ProjectID, params.PendingRequestIDs)
 }
@@ -401,6 +402,11 @@ func (s *Server) handleClientToolCall(conn *serverConnection, clientRequestID st
 		_ = conn.send(newErrorResponse(clientRequestID, ServerOverloaded, "server overloaded", nil))
 		return
 	}
+	if s.unityConns[targetConn.projectID] != targetConn {
+		s.mu.Unlock()
+		_ = conn.send(newErrorResponse(clientRequestID, UnityNotConnected, "Unity project disconnected before tool execution", nil))
+		return
+	}
 
 	daemonRequestID := fmt.Sprintf("d-%d-%d", time.Now().UnixMilli(), atomic.AddUint64(&s.nextRequestID, 1))
 	requestTimeout := defaultRequestTimeout
@@ -418,16 +424,23 @@ func (s *Server) handleClientToolCall(conn *serverConnection, clientRequestID st
 		timeout:         requestTimeout,
 	}
 	pending.timeoutTimer = time.AfterFunc(requestTimeout, func() {
-		_ = conn.send(newErrorResponse(clientRequestID, ToolTimeout, "tool execution timed out", nil))
-		s.clearPending(daemonRequestID)
+		claimed := s.claimPending(daemonRequestID, nil)
+		if claimed != nil {
+			_ = claimed.clientConn.send(newErrorResponse(claimed.clientRequestID, ToolTimeout, "tool execution timed out", nil))
+		}
 	})
 	s.pending[daemonRequestID] = pending
 	s.mu.Unlock()
 
-	_ = targetConn.send(newRequest(daemonRequestID, "daemon.executeTool", map[string]any{
+	if err := targetConn.send(newRequest(daemonRequestID, "daemon.executeTool", map[string]any{
 		"tool": params.Tool,
 		"args": params.Args,
-	}))
+	})); err != nil {
+		claimed := s.claimPending(daemonRequestID, targetConn)
+		if claimed != nil {
+			_ = conn.send(newErrorResponse(clientRequestID, UnityNotConnected, "failed to send tool request to Unity", nil))
+		}
+	}
 }
 
 func (s *Server) resolveToolTarget(tool string, projectID string) (*serverConnection, int, string) {
@@ -571,12 +584,16 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 }
 
 func (s *Server) clearPending(requestID string) {
+	_ = s.claimPending(requestID, nil)
+}
+
+func (s *Server) claimPending(requestID string, targetConn *serverConnection) *pendingRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	pending := s.pending[requestID]
-	if pending == nil {
-		return
+	if pending == nil || (targetConn != nil && pending.targetConn != targetConn) {
+		return nil
 	}
 	if pending.timeoutTimer != nil {
 		pending.timeoutTimer.Stop()
@@ -585,6 +602,7 @@ func (s *Server) clearPending(requestID string) {
 		pending.busyRetryTimer.Stop()
 	}
 	delete(s.pending, requestID)
+	return pending
 }
 
 func (s *Server) handleDisconnect(conn *serverConnection) {
@@ -605,6 +623,17 @@ func (s *Server) handleDisconnect(conn *serverConnection) {
 	if conn.kind == "client" && conn.clientID != "" {
 		if current := s.clientConns[conn.clientID]; current == conn {
 			delete(s.clientConns, conn.clientID)
+		}
+		for requestID, pending := range s.pending {
+			if pending.clientConn == conn {
+				if pending.timeoutTimer != nil {
+					pending.timeoutTimer.Stop()
+				}
+				if pending.busyRetryTimer != nil {
+					pending.busyRetryTimer.Stop()
+				}
+				delete(s.pending, requestID)
+			}
 		}
 	}
 
