@@ -97,7 +97,9 @@ type Server struct {
 	mu            sync.Mutex
 	unityConns    map[string]*serverConnection
 	clientConns   map[string]*serverConnection
+	connections   map[*serverConnection]struct{}
 	pending       map[string]*pendingRequest
+	stopped       bool
 	nextConnID    uint64
 	nextRequestID uint64
 }
@@ -106,6 +108,7 @@ func NewServer() *Server {
 	return &Server{
 		unityConns:  map[string]*serverConnection{},
 		clientConns: map[string]*serverConnection{},
+		connections: map[*serverConnection]struct{}{},
 		pending:     map[string]*pendingRequest{},
 	}
 }
@@ -113,7 +116,14 @@ func NewServer() *Server {
 // Serve accepts connections on the given listener until the listener is closed.
 // Call [Stop] from another goroutine to shut down.
 func (s *Server) Serve(listener net.Listener) error {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		_ = listener.Close()
+		return nil
+	}
 	s.listener = listener
+	s.mu.Unlock()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -128,6 +138,14 @@ func (s *Server) Serve(listener net.Listener) error {
 			conn:   conn,
 			reader: bufio.NewReader(conn),
 		}
+		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return nil
+		}
+		s.connections[connection] = struct{}{}
+		s.mu.Unlock()
 
 		go s.handleConnection(connection)
 	}
@@ -135,7 +153,11 @@ func (s *Server) Serve(listener net.Listener) error {
 
 func (s *Server) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.stopped = true
 
 	for _, pending := range s.pending {
 		if pending.timeoutTimer != nil {
@@ -146,17 +168,19 @@ func (s *Server) Stop() error {
 		}
 	}
 
-	for _, conn := range s.unityConns {
+	listener := s.listener
+	connections := make([]*serverConnection, 0, len(s.connections))
+	for conn := range s.connections {
+		connections = append(connections, conn)
+	}
+	s.mu.Unlock()
+
+	if listener != nil {
+		_ = listener.Close()
+	}
+	for _, conn := range connections {
 		_ = conn.conn.Close()
 	}
-	for _, conn := range s.clientConns {
-		_ = conn.conn.Close()
-	}
-
-	if s.listener != nil {
-		return s.listener.Close()
-	}
-
 	return nil
 }
 
@@ -504,8 +528,14 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 		resumed[id] = struct{}{}
 	}
 
+	type retryRequest struct {
+		conn *serverConnection
+		id   string
+		tool string
+		args map[string]any
+	}
+	var retries []retryRequest
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	conn := s.unityConns[projectID]
 	for _, pending := range s.pending {
@@ -513,6 +543,11 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 			continue
 		}
 
+		if conn == nil {
+			pending.awaitingReconnection = true
+			pending.targetConn = nil
+			continue
+		}
 		pending.awaitingReconnection = false
 		pending.targetConn = conn
 		if pending.awaitingUnityContinuation {
@@ -523,9 +558,14 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 			continue
 		}
 
-		_ = conn.send(newRequest(pending.daemonRequestID, "daemon.executeTool", map[string]any{
-			"tool": pending.tool,
-			"args": pending.args,
+		retries = append(retries, retryRequest{conn: conn, id: pending.daemonRequestID, tool: pending.tool, args: pending.args})
+	}
+	s.mu.Unlock()
+
+	for _, retry := range retries {
+		_ = retry.conn.send(newRequest(retry.id, "daemon.executeTool", map[string]any{
+			"tool": retry.tool,
+			"args": retry.args,
 		}))
 	}
 }
@@ -549,7 +589,7 @@ func (s *Server) clearPending(requestID string) {
 
 func (s *Server) handleDisconnect(conn *serverConnection) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	delete(s.connections, conn)
 
 	if conn.kind == "unity" && conn.projectID != "" {
 		if current := s.unityConns[conn.projectID]; current == conn {
@@ -568,6 +608,7 @@ func (s *Server) handleDisconnect(conn *serverConnection) {
 		}
 	}
 
+	s.mu.Unlock()
 	_ = conn.conn.Close()
 }
 

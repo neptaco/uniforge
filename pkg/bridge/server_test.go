@@ -193,3 +193,118 @@ func TestHandleDisconnectDoesNotRemoveReplacementClientConnection(t *testing.T) 
 		t.Fatal("replacement client connection was removed by the old connection's disconnect")
 	}
 }
+
+func TestResumePendingRequestsKeepsWaitingWhenConnectionDisappears(t *testing.T) {
+	server := NewServer()
+	pending := &pendingRequest{
+		daemonRequestID:      "d-1",
+		targetProjectID:      "project-1",
+		awaitingReconnection: true,
+	}
+	server.pending["d-1"] = pending
+
+	server.resumePendingRequests("project-1", nil)
+
+	if !pending.awaitingReconnection || pending.targetConn != nil {
+		t.Fatalf("pending request lost reconnection state: %+v", pending)
+	}
+}
+
+func TestResumePendingRequestsDoesNotHoldServerLockWhileSending(t *testing.T) {
+	server := NewServer()
+	serverSide, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	target := &serverConnection{id: "unity-1", conn: serverSide, projectID: "project-1"}
+	server.unityConns["project-1"] = target
+	server.pending["d-1"] = &pendingRequest{
+		daemonRequestID:      "d-1",
+		targetProjectID:      "project-1",
+		tool:                 "test-tool",
+		awaitingReconnection: true,
+	}
+
+	resumeDone := make(chan struct{})
+	go func() {
+		server.resumePendingRequests("project-1", nil)
+		close(resumeDone)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	lockAcquired := make(chan struct{})
+	go func() {
+		server.mu.Lock()
+		server.mu.Unlock()
+		close(lockAcquired)
+	}()
+	select {
+	case <-lockAcquired:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("server lock was held by a blocked connection write")
+	}
+
+	_ = peer.Close()
+	select {
+	case <-resumeDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("resume did not return after connection closed")
+	}
+}
+
+func TestStopClosesAcceptedUnregisteredConnection(t *testing.T) {
+	server := NewServer()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.mu.Lock()
+		count := len(server.connections)
+		server.mu.Unlock()
+		if count == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("accepted connection was not tracked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := server.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("unregistered connection remained open after Stop")
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Serve did not return after Stop")
+	}
+}
+
+func TestServeAfterStopReturnsImmediately(t *testing.T) {
+	server := NewServer()
+	if err := server.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Serve(listener); err != nil {
+		t.Fatal(err)
+	}
+}
