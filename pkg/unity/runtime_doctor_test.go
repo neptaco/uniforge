@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -29,7 +30,7 @@ func TestRuntimeDoctorNeverFixesActiveEditorLockfile(t *testing.T) {
 	project := makeRuntimeDoctorProject(t)
 	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
 	writeRuntimeFile(t, lockfile, "")
-	doctor := testRuntimeDoctor([]processInfo{{PID: 123, Command: "/Applications/Unity/Unity.app/Contents/MacOS/Unity -projectPath " + project}}, nil)
+	doctor := testRuntimeDoctor([]processInfo{{PID: 123, Command: runtimeDoctorEditorCommand(project)}}, nil)
 	result, err := doctor.Check(project, true)
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +56,9 @@ func TestRuntimeDoctorMatchesQuotedProjectPathExactly(t *testing.T) {
 }
 
 func TestRuntimeDoctorMatchesSymlinkedProjectPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix symlink path normalization test")
+	}
 	project := makeRuntimeDoctorProject(t)
 	link := filepath.Join(t.TempDir(), "project-link")
 	if err := os.Symlink(project, link); err != nil {
@@ -71,6 +75,13 @@ func TestRuntimeDoctorMatchesSymlinkedProjectPath(t *testing.T) {
 		t.Fatalf("symlinked project must match active editor: %+v", result)
 	}
 	assertRuntimeFileExists(t, lockfile)
+}
+
+func runtimeDoctorEditorCommand(project string) string {
+	if runtime.GOOS == "windows" {
+		return `C:\Program Files\Unity\Hub\Editor\6000.0.0f1\Editor\unity.exe -projectPath "` + project + `"`
+	}
+	return `/Applications/Unity/Unity.app/Contents/MacOS/Unity -projectPath "` + project + `"`
 }
 
 func TestRuntimeDoctorKeepsActiveILPP(t *testing.T) {
