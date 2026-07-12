@@ -149,7 +149,10 @@ func Start(ctx context.Context, config Config, opts StartOptions) error {
 	}
 	defer func() { _ = logFile.Close() }()
 
-	cmd := exec.CommandContext(ctx, executablePath, opts.Args...)
+	// The daemon outlives the command that starts it. Use ctx only while waiting
+	// for readiness; binding the child to ctx would kill it as soon as a CLI
+	// command such as `update` returns and cancels its request context.
+	cmd := exec.Command(executablePath, opts.Args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = processAttrs()
