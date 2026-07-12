@@ -334,6 +334,14 @@ func commandTargetsProjectForOS(command, projectPath, goos string) bool {
 		}
 	}
 	if goos == "windows" {
+		if runtime.GOOS == "windows" {
+			normalizedCandidate, candidateErr := normalizeProjectPath(candidate)
+			normalizedProject, projectErr := normalizeProjectPath(projectPath)
+			if candidateErr == nil && projectErr == nil {
+				candidate = normalizedCandidate
+				projectPath = normalizedProject
+			}
+		}
 		return normalizeWindowsPath(strings.TrimSpace(candidate)) == normalizeWindowsPath(strings.TrimSpace(projectPath))
 	}
 	normalizedCandidate, err := normalizeProjectPath(candidate)
