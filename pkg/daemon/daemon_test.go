@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func testConfig(t *testing.T) Config {
@@ -137,6 +138,58 @@ func TestIsRunningAndStop(t *testing.T) {
 	if err := Stop(context.Background(), cfg); err != nil {
 		t.Fatalf("stop non-existent: %v", err)
 	}
+}
+
+func TestStartDaemonOutlivesCallerContext(t *testing.T) {
+	if os.Getenv("UNIFORGE_DAEMON_START_HELPER") == "1" {
+		runDaemonStartHelper(t)
+		return
+	}
+
+	cfg := testConfig(t)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := Start(ctx, cfg, StartOptions{
+		Executable:  executable,
+		Args:        []string{"-test.run=TestStartDaemonOutlivesCallerContext"},
+		Env:         []string{"UNIFORGE_DAEMON_START_HELPER=1", "UNIFORGE_DAEMON_RUNTIME_DIR=" + cfg.RuntimeDir, "UNIFORGE_DAEMON_STATE_DIR=" + cfg.StateDir},
+		WaitTimeout: 5 * time.Second,
+	}); err != nil {
+		cancel()
+		t.Fatalf("start helper daemon: %v", err)
+	}
+	defer func() { _ = Stop(context.Background(), cfg) }()
+
+	info, err := ReadInfo(cfg)
+	if err != nil {
+		cancel()
+		t.Fatalf("read helper daemon info: %v", err)
+	}
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+	if !isProcessAlive(info.PID) {
+		t.Fatal("daemon was killed when the caller context was canceled")
+	}
+}
+
+func runDaemonStartHelper(t *testing.T) {
+	t.Helper()
+	cfg := Config{
+		Name:       "td",
+		RuntimeDir: os.Getenv("UNIFORGE_DAEMON_RUNTIME_DIR"),
+		StateDir:   os.Getenv("UNIFORGE_DAEMON_STATE_DIR"),
+	}
+	d := New(cfg)
+	if err := d.Lock(); err != nil {
+		t.Fatalf("helper lock: %v", err)
+	}
+	if _, err := d.Listen(nil); err != nil {
+		t.Fatalf("helper listen: %v", err)
+	}
+	select {}
 }
 
 func TestStopRemovesStaleInfoWithoutSignalingPID(t *testing.T) {
