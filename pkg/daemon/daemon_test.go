@@ -151,9 +151,17 @@ func TestStartDaemonOutlivesCallerContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	helperExecutable := filepath.Join(t.TempDir(), filepath.Base(executable))
+	executableData, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatalf("read test executable: %v", err)
+	}
+	if err := os.WriteFile(helperExecutable, executableData, 0o755); err != nil {
+		t.Fatalf("copy test executable: %v", err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := Start(ctx, cfg, StartOptions{
-		Executable:  executable,
+		Executable:  helperExecutable,
 		Args:        []string{"-test.run=TestStartDaemonOutlivesCallerContext"},
 		Env:         []string{"UNIFORGE_DAEMON_START_HELPER=1", "UNIFORGE_DAEMON_RUNTIME_DIR=" + cfg.RuntimeDir, "UNIFORGE_DAEMON_STATE_DIR=" + cfg.StateDir},
 		WaitTimeout: 5 * time.Second,
