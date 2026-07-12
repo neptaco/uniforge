@@ -84,10 +84,7 @@ func (r *BridgeRuntime) ExecuteTool(ctx context.Context, name string, arguments 
 	if toolpkg.IsBaseTool(name) {
 		var client *bridge.Client
 		if requiresDaemonTool(name) {
-			client = bridge.NewClient(bridge.ClientOptions{
-				AutoStartDaemon: r.autoStartDaemon,
-				RequestTimeout:  timeout,
-			})
+			client = bridge.NewClient(r.daemonClientOptions(timeout))
 			defer func() { _ = client.Close() }()
 
 			if err := client.Connect(); err != nil {
@@ -112,11 +109,7 @@ func (r *BridgeRuntime) ExecuteTool(ctx context.Context, name string, arguments 
 		}, nil
 	}
 
-	client := bridge.NewClient(bridge.ClientOptions{
-		DaemonConfig:    r.daemonConfig,
-		AutoStartDaemon: r.autoStartDaemon,
-		RequestTimeout:  timeout,
-	})
+	client := bridge.NewClient(r.daemonClientOptions(timeout))
 	defer func() { _ = client.Close() }()
 
 	if err := client.Connect(); err != nil {
@@ -144,11 +137,7 @@ func (r *BridgeRuntime) ExecuteTool(ctx context.Context, name string, arguments 
 }
 
 func (r *BridgeRuntime) listProjects(includeTools bool, timeout time.Duration) ([]bridge.ProjectInfo, error) {
-	client := bridge.NewClient(bridge.ClientOptions{
-		DaemonConfig:    r.daemonConfig,
-		AutoStartDaemon: r.autoStartDaemon,
-		RequestTimeout:  timeout,
-	})
+	client := bridge.NewClient(r.daemonClientOptions(timeout))
 	defer func() { _ = client.Close() }()
 
 	if err := client.Connect(); err != nil {
@@ -164,6 +153,14 @@ func (r *BridgeRuntime) listProjects(includeTools bool, timeout time.Duration) (
 	}
 
 	return result.Projects, nil
+}
+
+func (r *BridgeRuntime) daemonClientOptions(timeout time.Duration) bridge.ClientOptions {
+	return bridge.ClientOptions{
+		DaemonConfig:    r.daemonConfig,
+		AutoStartDaemon: r.autoStartDaemon,
+		RequestTimeout:  timeout,
+	}
 }
 
 func (r *BridgeRuntime) scopeProjects(projects []bridge.ProjectInfo, explicitProject string) ([]bridge.ProjectInfo, error) {
