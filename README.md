@@ -90,7 +90,7 @@ jobs:
 ### macOS / Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/neptaco/uniforge/main/install.sh | sh
+curl -fsSL https://github.com/neptaco/uniforge/releases/latest/download/install.sh | sh
 ```
 
 The installer verifies the release checksum and installs to `~/.local/bin` by default. Set `UNIFORGE_INSTALL_DIR` or pass `--install-dir` to choose another directory.
@@ -98,7 +98,7 @@ The installer verifies the release checksum and installs to `~/.local/bin` by de
 ### Windows
 
 ```powershell
-irm https://raw.githubusercontent.com/neptaco/uniforge/main/install.ps1 | iex
+irm https://github.com/neptaco/uniforge/releases/latest/download/install.ps1 | iex
 ```
 
 ### Update
