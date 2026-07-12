@@ -3,7 +3,10 @@ package bridge
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -311,4 +314,66 @@ func TestServeAfterStopReturnsImmediately(t *testing.T) {
 	if err := server.Serve(listener); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestClaimPendingAllowsOnlyOneCompletion(t *testing.T) {
+	server := NewServer()
+	server.pending["d-1"] = &pendingRequest{daemonRequestID: "d-1"}
+	var claimed atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if server.claimPending("d-1", nil) != nil {
+				claimed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := claimed.Load(); got != 1 {
+		t.Fatalf("pending request claimed %d times, want 1", got)
+	}
+}
+
+func TestClientDisconnectCancelsOwnedPendingRequests(t *testing.T) {
+	server := NewServer()
+	serverSide, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	client := &serverConnection{kind: "client", clientID: "client-1", conn: serverSide}
+	server.clientConns[client.clientID] = client
+	server.connections[client] = struct{}{}
+	server.pending["owned"] = &pendingRequest{clientConn: client, timeoutTimer: time.NewTimer(time.Hour)}
+	server.pending["other"] = &pendingRequest{clientConn: &serverConnection{id: "other"}}
+
+	server.handleDisconnect(client)
+
+	server.mu.Lock()
+	_, ownedExists := server.pending["owned"]
+	_, otherExists := server.pending["other"]
+	server.mu.Unlock()
+	if ownedExists || !otherExists {
+		t.Fatalf("pending after disconnect: owned=%v other=%v", ownedExists, otherExists)
+	}
+}
+
+func TestUnityReregisterAndProjectReadsAreRaceFree(t *testing.T) {
+	server := NewServer()
+	conn := &serverConnection{id: "unity-1"}
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func(index int) {
+			defer wg.Done()
+			server.handleUnityRegister(conn, unityRegisterParams{
+				ProjectID: "project-1",
+				Tools:     []ToolDefinition{{Name: fmt.Sprintf("tool-%d", index)}},
+			})
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = server.buildProjectsResult(true)
+		}()
+	}
+	wg.Wait()
 }
