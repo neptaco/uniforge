@@ -151,7 +151,24 @@ func TestStartDaemonOutlivesCallerContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	helperExecutable := filepath.Join(t.TempDir(), filepath.Base(executable))
+	helperDir, err := os.MkdirTemp("", "daemon-start-helper-")
+	if err != nil {
+		t.Fatalf("create helper directory: %v", err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := os.RemoveAll(helperDir)
+			if err == nil || time.Now().After(deadline) {
+				if err != nil {
+					t.Errorf("remove helper directory: %v", err)
+				}
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	helperExecutable := filepath.Join(helperDir, filepath.Base(executable))
 	executableData, err := os.ReadFile(executable)
 	if err != nil {
 		t.Fatalf("read test executable: %v", err)
