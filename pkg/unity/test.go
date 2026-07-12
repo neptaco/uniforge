@@ -77,7 +77,13 @@ func (t *TestRunner) RunTests(config TestConfig) (*TestSummary, error) {
 		return nil, fmt.Errorf("failed to get Unity Editor path: %w", err)
 	}
 
-	args, resultsFile := t.buildArgs(absProjectPath, config)
+	preparedConfig, cleanupResults, err := prepareTestResults(config)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupResults()
+
+	args, resultsFile := t.buildArgs(absProjectPath, preparedConfig)
 
 	timeout := config.TimeoutSeconds
 	if timeout == 0 {
@@ -115,6 +121,31 @@ func (t *TestRunner) RunTests(config TestConfig) (*TestSummary, error) {
 	}
 
 	return evaluateTestOutcome(resultsFile, waitErr)
+}
+
+func prepareTestResults(config TestConfig) (TestConfig, func(), error) {
+	resultsFile := config.ResultsFile
+	if resultsFile == "" && config.ResultsDir != "" {
+		resultsFile = filepath.Join(config.ResultsDir, fmt.Sprintf("TestResults-%s.xml", config.Platform))
+	}
+	if resultsFile != "" {
+		if err := os.MkdirAll(filepath.Dir(resultsFile), 0o755); err != nil {
+			return config, nil, fmt.Errorf("create test results directory: %w", err)
+		}
+		if err := os.Remove(resultsFile); err != nil && !os.IsNotExist(err) {
+			return config, nil, fmt.Errorf("remove stale test results file: %w", err)
+		}
+		config.ResultsFile = resultsFile
+		return config, func() {}, nil
+	}
+
+	tempDir, err := os.MkdirTemp("", "uniforge-test-results-*")
+	if err != nil {
+		return config, nil, fmt.Errorf("create temporary test results directory: %w", err)
+	}
+
+	config.ResultsFile = filepath.Join(tempDir, fmt.Sprintf("TestResults-%s.xml", config.Platform))
+	return config, func() { _ = os.RemoveAll(tempDir) }, nil
 }
 
 func evaluateTestOutcome(resultsFile string, waitErr error) (*TestSummary, error) {
@@ -183,7 +214,7 @@ type nunitTestRun struct {
 // parseTestResults parses NUnit XML results file and returns a summary
 func parseTestResults(resultsFile string) (*TestSummary, error) {
 	if resultsFile == "" {
-		return nil, nil
+		return nil, errors.New("test results file path is empty")
 	}
 
 	data, err := os.ReadFile(resultsFile)
