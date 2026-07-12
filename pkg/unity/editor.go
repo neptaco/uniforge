@@ -274,16 +274,17 @@ func findUnityProcessFromPSOutput(output, projectPath string) int {
 }
 
 func isUnityEditorCommandLine(commandLine string) bool {
-	commandLine = strings.TrimSpace(commandLine)
+	commandLine = strings.ToLower(strings.TrimSpace(commandLine))
 	if commandLine == "" {
 		return false
 	}
 
 	// Match the actual Unity editor executable, not arbitrary commands that happen
 	// to contain "unity" in their working directory or arguments.
-	return strings.Contains(commandLine, "Unity.app/Contents/MacOS/Unity") ||
-		strings.Contains(commandLine, "/Editor/Unity") ||
-		strings.Contains(commandLine, "Unity.exe")
+	return strings.Contains(commandLine, "unity.app/contents/macos/unity") ||
+		strings.Contains(commandLine, "/editor/unity") ||
+		strings.Contains(commandLine, `\editor\unity`) ||
+		strings.Contains(commandLine, "unity.exe")
 }
 
 func waitForUnityProcessExit(

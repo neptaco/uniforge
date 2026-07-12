@@ -40,6 +40,39 @@ func TestRuntimeDoctorNeverFixesActiveEditorLockfile(t *testing.T) {
 	assertRuntimeFileExists(t, lockfile)
 }
 
+func TestRuntimeDoctorMatchesQuotedProjectPathExactly(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
+	writeRuntimeFile(t, lockfile, "")
+	doctor := testRuntimeDoctor([]processInfo{{PID: 123, Command: `/Applications/Unity/Unity.app/Contents/MacOS/Unity -projectPath "` + project + `-other"`}}, nil)
+	result, err := doctor.Check(project, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EditorPID != 0 || !result.HasFixableIssues() {
+		t.Fatalf("prefix path must not match: %+v", result)
+	}
+}
+
+func TestRuntimeDoctorMatchesSymlinkedProjectPath(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	link := filepath.Join(t.TempDir(), "project-link")
+	if err := os.Symlink(project, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
+	writeRuntimeFile(t, lockfile, "")
+	doctor := testRuntimeDoctor([]processInfo{{PID: 123, Command: `/Applications/Unity/Unity.app/Contents/MacOS/Unity -projectPath "` + link + `"`}}, nil)
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.EditorPID != 123 || len(result.Fixes) != 0 {
+		t.Fatalf("symlinked project must match active editor: %+v", result)
+	}
+	assertRuntimeFileExists(t, lockfile)
+}
+
 func TestRuntimeDoctorKeepsActiveILPP(t *testing.T) {
 	project := makeRuntimeDoctorProject(t)
 	pidFile := filepath.Join(project, "Library", "ilpp.pid")
@@ -66,6 +99,46 @@ func TestRuntimeDoctorStopsOrphanLicensingClient(t *testing.T) {
 	if result.HasUnfixedBlockingIssues() || stopped != 99 {
 		t.Fatalf("unexpected result: %+v, stopped=%d", result, stopped)
 	}
+}
+
+func TestRuntimeDoctorIgnoresLicensingTextInUnrelatedCommand(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	doctor := testRuntimeDoctor([]processInfo{{PID: 99, Name: "tail", Command: "tail -f /tmp/Unity.Licensing.Client.log"}}, func(pid int) error {
+		t.Fatalf("unexpected stop %d", pid)
+		return nil
+	})
+	result, err := doctor.Check(project, true)
+	if err != nil || result.HasIssues() {
+		t.Fatalf("unexpected result: %+v, err=%v", result, err)
+	}
+}
+
+func TestRuntimeDoctorDoesNotStopLicensingClientWhileHubRuns(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	processes := []processInfo{
+		{PID: 77, Name: "Unity Hub", Command: `/Applications/Unity Hub.app/Contents/MacOS/Unity Hub`},
+		{PID: 99, Name: "Unity.Licensing.Client", Command: "Unity.Licensing.Client"},
+	}
+	doctor := testRuntimeDoctor(processes, func(pid int) error { t.Fatalf("unexpected stop %d", pid); return nil })
+	result, err := doctor.Check(project, true)
+	if err != nil || result.HasIssues() {
+		t.Fatalf("unexpected result: %+v, err=%v", result, err)
+	}
+}
+
+func TestRuntimeDoctorDoesNotFixInvalidILPPPid(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	pidFile := filepath.Join(project, "Library", "ilpp.pid")
+	writeRuntimeFile(t, pidFile, "not-a-pid\n")
+	doctor := testRuntimeDoctor(nil, nil)
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.HasUnfixedBlockingIssues() || result.HasFixableIssues() || len(result.Fixes) != 0 || result.Issues[0].PID != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertRuntimeFileExists(t, pidFile)
 }
 
 func TestRuntimeDoctorDoesNotStopLicensingClientWhileAnyEditorRuns(t *testing.T) {
