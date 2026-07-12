@@ -3,8 +3,10 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -264,6 +266,74 @@ func TestStopRejectsInfoPIDThatDoesNotMatchLockOwner(t *testing.T) {
 	}
 	if err := Stop(context.Background(), cfg); err == nil {
 		t.Fatal("Stop should reject a PID that does not own the daemon lock")
+	}
+}
+
+func TestStopTargetUsesLockPIDWhenInfoIsMissing(t *testing.T) {
+	cfg := testConfig(t)
+	d := New(cfg)
+	if err := d.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Shutdown() }()
+
+	pid, running, err := stopTargetPID(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !running || pid != os.Getpid() {
+		t.Fatalf("stop target = pid %d, running %v; want pid %d, running true", pid, running, os.Getpid())
+	}
+}
+
+func TestLifecycleLockSerializesOperations(t *testing.T) {
+	cfg := testConfig(t)
+	first, err := acquireLifecycleLock(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLifecycleLock(first)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := acquireLifecycleLock(ctx, cfg); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second lifecycle lock error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestWriteInfoIsAtomicForConcurrentReaders(t *testing.T) {
+	cfg := testConfig(t)
+	if err := writeInfo(cfg, Info{PID: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if _, err := ReadInfo(cfg); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	for i := 2; i < 202; i++ {
+		if err := writeInfo(cfg, Info{PID: i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatalf("concurrent ReadInfo observed partial write: %v", err)
+	default:
 	}
 }
 

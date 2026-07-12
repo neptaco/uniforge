@@ -83,15 +83,16 @@ func runningLockPID(config Config) (int, bool, error) {
 // then escalates to SIGKILL if needed. Cleans up the info file.
 // Returns nil if no daemon is running.
 func Stop(ctx context.Context, config Config) error {
-	info, err := ReadInfo(config)
+	lock, err := acquireLifecycleLock(ctx, config)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
 		return err
 	}
+	defer releaseLifecycleLock(lock)
+	return stopUnlocked(ctx, config)
+}
 
-	lockPID, running, err := runningLockPID(config)
+func stopUnlocked(ctx context.Context, config Config) error {
+	lockPID, running, err := stopTargetPID(config)
 	if err != nil {
 		return err
 	}
@@ -99,22 +100,41 @@ func Stop(ctx context.Context, config Config) error {
 		_ = removeInfo(config)
 		return nil
 	}
-	if lockPID != info.PID {
-		return fmt.Errorf("daemon state changed: info PID %d does not match lock owner PID %d", info.PID, lockPID)
-	}
-
-	if err := stopProcess(ctx, info.PID); err != nil {
+	if err := stopProcess(ctx, lockPID); err != nil {
 		return err
 	}
 
-	_ = removeInfo(config)
-	return nil
+	return removeInfoIfPID(config, lockPID)
+}
+
+func stopTargetPID(config Config) (int, bool, error) {
+	lockPID, running, err := runningLockPID(config)
+	if err != nil || !running {
+		return lockPID, running, err
+	}
+	info, infoErr := ReadInfo(config)
+	if infoErr != nil && !errors.Is(infoErr, os.ErrNotExist) {
+		return 0, true, infoErr
+	}
+	if info != nil && lockPID != info.PID {
+		return 0, true, fmt.Errorf("daemon state changed: info PID %d does not match lock owner PID %d", info.PID, lockPID)
+	}
+	return lockPID, true, nil
 }
 
 // Start launches the daemon as a background process.
 // It waits for the daemon to advertise its info file before returning.
 // Returns nil if a daemon is already running.
 func Start(ctx context.Context, config Config, opts StartOptions) error {
+	lock, err := acquireLifecycleLock(ctx, config)
+	if err != nil {
+		return err
+	}
+	defer releaseLifecycleLock(lock)
+	return startUnlocked(ctx, config, opts)
+}
+
+func startUnlocked(ctx context.Context, config Config, opts StartOptions) error {
 	if IsRunning(config) {
 		return nil
 	}
@@ -182,6 +202,39 @@ func Start(ctx context.Context, config Config, opts StartOptions) error {
 	}
 
 	return errors.New("daemon did not advertise its endpoint in time")
+}
+
+func acquireLifecycleLock(ctx context.Context, config Config) (*os.File, error) {
+	if err := ensureDir(config.runtimeDir); err != nil {
+		return nil, err
+	}
+	path, err := config.lifecycleLockPath()
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		if err := lockFile(f); err == nil {
+			return f, nil
+		}
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+func releaseLifecycleLock(f *os.File) {
+	if f == nil {
+		return
+	}
+	unlockFile(f)
+	_ = f.Close()
 }
 
 // Dial connects to the running daemon using the transport advertised in its info file.
