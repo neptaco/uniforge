@@ -27,6 +27,66 @@ func TestBuildArgs_Basic(t *testing.T) {
 	assertContains(t, args, "-batchmode", "")
 	assertContains(t, args, "-testPlatform", "editmode")
 	assertContains(t, args, "-logFile", "-")
+	assertNotContains(t, args, "-quit")
+}
+
+func TestPrepareTestResultsCreatesTemporaryResultPath(t *testing.T) {
+	config, cleanup, err := prepareTestResults(TestConfig{Platform: TestPlatformEditMode})
+	if err != nil {
+		t.Fatalf("prepareTestResults failed: %v", err)
+	}
+	resultsDir := filepath.Dir(config.ResultsFile)
+	if config.ResultsFile == "" {
+		t.Fatal("expected a temporary results file path")
+	}
+	if filepath.Base(config.ResultsFile) != "TestResults-editmode.xml" {
+		t.Fatalf("results file = %q", config.ResultsFile)
+	}
+	if _, err := os.Stat(resultsDir); err != nil {
+		t.Fatalf("temporary results directory: %v", err)
+	}
+
+	cleanup()
+	if _, err := os.Stat(resultsDir); !os.IsNotExist(err) {
+		t.Fatalf("temporary results directory still exists: %v", err)
+	}
+}
+
+func TestPrepareTestResultsPreservesExplicitResultPath(t *testing.T) {
+	resultsFile := filepath.Join(t.TempDir(), "nested", "explicit-results.xml")
+	config := TestConfig{ResultsFile: resultsFile}
+	prepared, cleanup, err := prepareTestResults(config)
+	if err != nil {
+		t.Fatalf("prepareTestResults failed: %v", err)
+	}
+	defer cleanup()
+
+	if prepared.ResultsFile != config.ResultsFile {
+		t.Fatalf("results file = %q, want %q", prepared.ResultsFile, config.ResultsFile)
+	}
+	if _, err := os.Stat(filepath.Dir(resultsFile)); err != nil {
+		t.Fatalf("results directory: %v", err)
+	}
+}
+
+func TestPrepareTestResultsRemovesStaleResultFile(t *testing.T) {
+	resultsFile := filepath.Join(t.TempDir(), "results.xml")
+	if err := os.WriteFile(resultsFile, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, cleanup, err := prepareTestResults(TestConfig{ResultsFile: resultsFile})
+	if err != nil {
+		t.Fatalf("prepareTestResults failed: %v", err)
+	}
+	defer cleanup()
+
+	if prepared.ResultsFile != resultsFile {
+		t.Fatalf("results file = %q, want %q", prepared.ResultsFile, resultsFile)
+	}
+	if _, err := os.Stat(resultsFile); !os.IsNotExist(err) {
+		t.Fatalf("stale results file still exists: %v", err)
+	}
 }
 
 func TestBuildArgs_WithResultsFile(t *testing.T) {
@@ -136,12 +196,8 @@ func TestParseTestResults_ValidXML(t *testing.T) {
 }
 
 func TestParseTestResults_EmptyPath(t *testing.T) {
-	summary, err := parseTestResults("")
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-	if summary != nil {
-		t.Errorf("expected nil summary, got %v", summary)
+	if _, err := parseTestResults(""); err == nil {
+		t.Fatal("expected an error for an empty results file path")
 	}
 }
 
@@ -223,4 +279,13 @@ func assertContains(t *testing.T, args []string, flag, value string) {
 		}
 	}
 	t.Errorf("flag %q not found in args: %v", flag, args)
+}
+
+func assertNotContains(t *testing.T, args []string, value string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == value {
+			t.Fatalf("unexpected argument %q in %v", value, args)
+		}
+	}
 }

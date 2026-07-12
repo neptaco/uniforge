@@ -29,10 +29,7 @@ var daemonRunCmd = &cobra.Command{
 			return err
 		}
 
-		meta, _ := json.Marshal(bridge.DaemonMeta{
-			ProtocolVersion: bridge.ProtocolVersion,
-			Version:         bridge.PackageVersion,
-		})
+		meta, _ := json.Marshal(newDaemonMeta(Version))
 		listener, err := d.Listen(meta)
 		if err != nil {
 			_ = d.Shutdown()
@@ -59,6 +56,13 @@ var daemonRunCmd = &cobra.Command{
 
 		return server.Serve(listener)
 	},
+}
+
+func newDaemonMeta(version string) bridge.DaemonMeta {
+	return bridge.DaemonMeta{
+		ProtocolVersion: bridge.ProtocolVersion,
+		Version:         version,
+	}
 }
 
 func init() {
