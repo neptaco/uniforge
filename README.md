@@ -153,6 +153,9 @@ uniforge editor list
 
 # List available versions (for scripting)
 uniforge editor available --lts --latest --format json
+
+# Clear cached Unity release information
+uniforge cache clear
 ```
 
 ### Batch Mode (Unity Editor closed)
@@ -192,6 +195,9 @@ uniforge daemon start
 
 # Check daemon status
 uniforge daemon status
+
+# Restart daemon
+uniforge daemon restart
 
 # List connected Unity projects
 uniforge tool projects
@@ -251,6 +257,9 @@ uniforge project open my-game
 
 # Get project path (for shell scripts)
 uniforge project path my-game
+
+# Show project details (Unity version, packages, asmdefs)
+uniforge project info my-game
 ```
 
 ### Open/Close Unity Editor
@@ -297,7 +306,15 @@ uniforge doctor unity ./MyProject
 uniforge doctor unity ./MyProject --fix
 ```
 
-The doctor never removes runtime files when the process state cannot be verified or a matching Unity process is active. Use `uniforge clean unity` when you explicitly want to remove a selected runtime file.
+The doctor never removes runtime files when the process state cannot be verified or a matching Unity process is active. Use `uniforge clean unity` when you explicitly want to remove a selected runtime file:
+
+```bash
+# Remove Temp/UnityLockfile after verifying the editor is not running
+uniforge clean unity ./MyProject --target lockfile
+
+# Preview what would be removed
+uniforge clean unity ./MyProject --target lockfile --dry-run
+```
 
 ### Manage Unity License
 
