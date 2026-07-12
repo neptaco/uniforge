@@ -152,7 +152,7 @@ uniforge editor install 2022.3.10f1 --modules ios,android
 uniforge editor list
 
 # List available versions (for scripting)
-uniforge editor available --lts --latest --format json
+uniforge editor available --lts --latest -o json
 
 # Clear cached Unity release information
 uniforge cache clear
@@ -250,7 +250,7 @@ uniforge meta check ./MyProject --fix --force
 uniforge project list
 
 # List in JSON format
-uniforge project list --format=json
+uniforge project list -o json
 
 # Open project by name (partial match)
 uniforge project open my-game
