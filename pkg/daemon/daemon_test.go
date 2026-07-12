@@ -169,6 +169,7 @@ func TestStartDaemonOutlivesCallerContext(t *testing.T) {
 		}
 	})
 	helperExecutable := filepath.Join(helperDir, filepath.Base(executable))
+	shutdownFile := filepath.Join(helperDir, "shutdown")
 	executableData, err := os.ReadFile(executable)
 	if err != nil {
 		t.Fatalf("read test executable: %v", err)
@@ -180,7 +181,7 @@ func TestStartDaemonOutlivesCallerContext(t *testing.T) {
 	if err := Start(ctx, cfg, StartOptions{
 		Executable:  helperExecutable,
 		Args:        []string{"-test.run=TestStartDaemonOutlivesCallerContext"},
-		Env:         []string{"UNIFORGE_DAEMON_START_HELPER=1", "UNIFORGE_DAEMON_RUNTIME_DIR=" + cfg.RuntimeDir, "UNIFORGE_DAEMON_STATE_DIR=" + cfg.StateDir},
+		Env:         []string{"UNIFORGE_DAEMON_START_HELPER=1", "UNIFORGE_DAEMON_RUNTIME_DIR=" + cfg.RuntimeDir, "UNIFORGE_DAEMON_STATE_DIR=" + cfg.StateDir, "UNIFORGE_DAEMON_SHUTDOWN_FILE=" + shutdownFile},
 		WaitTimeout: 5 * time.Second,
 	}); err != nil {
 		cancel()
@@ -196,9 +197,21 @@ func TestStartDaemonOutlivesCallerContext(t *testing.T) {
 	if !isProcessAlive(info.PID) {
 		t.Fatal("daemon was killed when the caller context was canceled")
 	}
-	if err := Stop(context.Background(), cfg); err != nil {
+	if err := os.WriteFile(shutdownFile, nil, 0o600); err != nil {
 		_ = forceStop(info.PID)
-		t.Fatalf("stop helper daemon: %v", err)
+		t.Fatalf("request helper shutdown: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := ReadInfo(cfg)
+		if os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = forceStop(info.PID)
+			t.Fatal("helper daemon did not shut down")
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -216,7 +229,16 @@ func runDaemonStartHelper(t *testing.T) {
 	if _, err := d.Listen(nil); err != nil {
 		t.Fatalf("helper listen: %v", err)
 	}
-	select {}
+	shutdownFile := os.Getenv("UNIFORGE_DAEMON_SHUTDOWN_FILE")
+	for {
+		if _, err := os.Stat(shutdownFile); err == nil {
+			if err := d.Shutdown(); err != nil {
+				t.Fatalf("helper shutdown: %v", err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestStopRemovesStaleInfoWithoutSignalingPID(t *testing.T) {
