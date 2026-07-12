@@ -1,0 +1,42 @@
+# Builds and binaries
+*.test
+dist/
+/uniforge
+
+# Coverage
+*.out
+coverage.html
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+.vs/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Local config
+.uniforge.yaml
+
+# Local development context
+/.agents/
+/.claude/
+/.codex/
+/CLAUDE.md
+/AGENTS.md
+/.mcp.json
+/spec/
+/docs/internal/
+/docs/tool-feedback*.md

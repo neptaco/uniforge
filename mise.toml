@@ -1,0 +1,12 @@
+[env]
+DOTNET_NOLOGO = "true"
+DOTNET_CLI_TELEMETRY_OPTOUT = "true"
+
+[tools]
+go = "1.25"
+task = "latest"
+dotnet = "10"
+
+# Keep this version in sync with .github/workflows/ci.yml
+golangci-lint = "2.8.0"
+lefthook = "1.11.5"
