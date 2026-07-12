@@ -41,6 +41,20 @@ jobs:
       - name: Build
         run: task build
 
+      - name: Test standalone installer (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          sh ./install.sh --install-dir "$RUNNER_TEMP/uniforge-bin"
+          "$RUNNER_TEMP/uniforge-bin/uniforge" --version
+
+      - name: Test standalone installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./install.ps1 -InstallDir "$env:RUNNER_TEMP\uniforge-bin"
+          & "$env:RUNNER_TEMP\uniforge-bin\uniforge.exe" --version
+
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest'
         uses: codecov/codecov-action@v5

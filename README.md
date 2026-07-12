@@ -87,21 +87,33 @@ jobs:
 - uses: neptaco/setup-uniforge@v1
 ```
 
-### Using Homebrew (macOS/Linux)
+### macOS / Linux
 
 ```bash
-brew tap neptaco/tap
-brew install uniforge
+curl -fsSL https://raw.githubusercontent.com/neptaco/uniforge/main/install.sh | sh
 ```
 
-### Using Scoop (Windows)
+The installer verifies the release checksum and installs to `~/.local/bin` by default. Set `UNIFORGE_INSTALL_DIR` or pass `--install-dir` to choose another directory.
+
+### Windows
 
 ```powershell
-scoop bucket add neptaco https://github.com/neptaco/scoop-bucket
-scoop install uniforge
+irm https://raw.githubusercontent.com/neptaco/uniforge/main/install.ps1 | iex
 ```
 
-### Download Binary
+### Update
+
+Standalone installations can update themselves:
+
+```bash
+uniforge update
+uniforge update --check
+uniforge update --version v0.9.0
+```
+
+Package-manager and development builds are not modified by `uniforge update`.
+
+### Manual download
 
 Download the latest release from [GitHub Releases](https://github.com/neptaco/uniforge/releases).
 
