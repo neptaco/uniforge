@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"time"
 )
 
 // Transport represents the IPC transport type.
@@ -89,7 +91,20 @@ func writeInfo(config Config, info Info) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	if runtime.GOOS != "windows" {
+		return os.Rename(tempPath, path)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := os.Rename(tempPath, path)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func removeInfoIfPID(config Config, pid int) error {

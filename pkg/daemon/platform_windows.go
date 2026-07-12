@@ -17,6 +17,7 @@ import (
 const (
 	lockfileExclusiveLock   = 0x00000002
 	lockfileFailImmediately = 0x00000001
+	lockfileByteOffset      = 4096
 	processStillActive      = 259
 )
 
@@ -24,7 +25,7 @@ var procLockFileEx = syscall.NewLazyDLL("kernel32.dll").NewProc("LockFileEx")
 
 // lockFile acquires a non-blocking exclusive lock using LockFileEx.
 func lockFile(f *os.File) error {
-	var ol syscall.Overlapped
+	ol := syscall.Overlapped{Offset: lockfileByteOffset}
 	r1, _, err := procLockFileEx.Call(
 		uintptr(f.Fd()),
 		uintptr(lockfileExclusiveLock|lockfileFailImmediately),
@@ -43,7 +44,7 @@ var procUnlockFileEx = syscall.NewLazyDLL("kernel32.dll").NewProc("UnlockFileEx"
 
 // unlockFile releases a previously acquired file lock.
 func unlockFile(f *os.File) {
-	var ol syscall.Overlapped
+	ol := syscall.Overlapped{Offset: lockfileByteOffset}
 	_, _, _ = procUnlockFileEx.Call(
 		uintptr(f.Fd()),
 		0,
