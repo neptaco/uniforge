@@ -230,14 +230,18 @@ func TestResumePendingRequestsDoesNotHoldServerLockWhileSending(t *testing.T) {
 	}()
 	time.Sleep(20 * time.Millisecond)
 
-	lockAcquired := make(chan struct{})
+	lockAcquired := make(chan int, 1)
 	go func() {
 		server.mu.Lock()
+		pendingCount := len(server.pending)
 		server.mu.Unlock()
-		close(lockAcquired)
+		lockAcquired <- pendingCount
 	}()
 	select {
-	case <-lockAcquired:
+	case pendingCount := <-lockAcquired:
+		if pendingCount != 1 {
+			t.Fatalf("pending count = %d, want 1", pendingCount)
+		}
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("server lock was held by a blocked connection write")
 	}
