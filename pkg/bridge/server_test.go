@@ -40,6 +40,8 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 		},
 		timeout: requestTimeout,
 	}
+	unityConnection := &serverConnection{id: "unity-1"}
+	pending.targetConn = unityConnection
 	pending.timeoutTimer = time.AfterFunc(requestTimeout, func() {
 		_ = pending.clientConn.send(newErrorResponse(clientRequestID, ToolTimeout, "tool execution timed out", nil))
 		server.clearPending(requestID)
@@ -59,7 +61,7 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 		t.Fatalf("marshal pending result: %v", err)
 	}
 
-	server.handleResponse(&serverConnection{id: "unity-1"}, rpcEnvelope{
+	server.handleResponse(unityConnection, rpcEnvelope{
 		ID:     responseID,
 		Result: result,
 	})
@@ -91,6 +93,45 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 	case <-readDone:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("reader goroutine did not exit")
+	}
+}
+
+func TestHandleResponseRejectsDifferentUnityConnection(t *testing.T) {
+	server := NewServer()
+	expected := &serverConnection{id: "unity-expected"}
+	server.pending["d-1"] = &pendingRequest{
+		daemonRequestID: "d-1",
+		targetConn:      expected,
+	}
+
+	responseID, err := json.Marshal("d-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := json.Marshal(unityToolResultEnvelope{Success: true, Result: "forged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.handleResponse(&serverConnection{id: "unity-attacker"}, rpcEnvelope{ID: responseID, Result: result})
+
+	server.mu.Lock()
+	_, stillPending := server.pending["d-1"]
+	server.mu.Unlock()
+	if !stillPending {
+		t.Fatal("response from a different Unity connection completed the pending request")
+	}
+}
+
+func TestHandleUnityBusyRejectsDifferentUnityConnection(t *testing.T) {
+	server := NewServer()
+	expected := &serverConnection{id: "unity-expected"}
+	pending := &pendingRequest{daemonRequestID: "d-1", targetConn: expected}
+	server.pending["d-1"] = pending
+
+	server.handleUnityBusy(&serverConnection{id: "unity-attacker"}, unityBusyParams{RequestID: "d-1", RetryAfterMS: 1})
+
+	if pending.retryCount != 0 || pending.busyRetryTimer != nil {
+		t.Fatal("busy notification from a different Unity connection changed the pending request")
 	}
 }
 
