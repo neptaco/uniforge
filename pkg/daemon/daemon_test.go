@@ -222,18 +222,14 @@ func runDaemonStartHelper(t *testing.T) {
 		RuntimeDir: os.Getenv("UNIFORGE_DAEMON_RUNTIME_DIR"),
 		StateDir:   os.Getenv("UNIFORGE_DAEMON_STATE_DIR"),
 	}
-	d := New(cfg)
-	if err := d.Lock(); err != nil {
-		t.Fatalf("helper lock: %v", err)
-	}
-	if _, err := d.Listen(nil); err != nil {
-		t.Fatalf("helper listen: %v", err)
+	if err := writeInfo(cfg, Info{PID: os.Getpid()}); err != nil {
+		t.Fatalf("helper write info: %v", err)
 	}
 	shutdownFile := os.Getenv("UNIFORGE_DAEMON_SHUTDOWN_FILE")
 	for {
 		if _, err := os.Stat(shutdownFile); err == nil {
-			if err := d.Shutdown(); err != nil {
-				t.Fatalf("helper shutdown: %v", err)
+			if err := removeInfo(cfg); err != nil {
+				t.Fatalf("helper remove info: %v", err)
 			}
 			return
 		}
