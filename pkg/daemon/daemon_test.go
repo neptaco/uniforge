@@ -186,8 +186,6 @@ func TestStartDaemonOutlivesCallerContext(t *testing.T) {
 		cancel()
 		t.Fatalf("start helper daemon: %v", err)
 	}
-	defer func() { _ = Stop(context.Background(), cfg) }()
-
 	info, err := ReadInfo(cfg)
 	if err != nil {
 		cancel()
@@ -197,6 +195,10 @@ func TestStartDaemonOutlivesCallerContext(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if !isProcessAlive(info.PID) {
 		t.Fatal("daemon was killed when the caller context was canceled")
+	}
+	if err := Stop(context.Background(), cfg); err != nil {
+		_ = forceStop(info.PID)
+		t.Fatalf("stop helper daemon: %v", err)
 	}
 }
 
