@@ -11,8 +11,8 @@ import (
 func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 	server := NewServer()
 	clientConn, daemonConn := net.Pipe()
-	defer clientConn.Close()
-	defer daemonConn.Close()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = daemonConn.Close() }()
 
 	clientMessages := make(chan map[string]any, 4)
 	readDone := make(chan struct{})
@@ -86,7 +86,7 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 		t.Fatal("timed out waiting for timeout response")
 	}
 
-	daemonConn.Close()
+	_ = daemonConn.Close()
 	select {
 	case <-readDone:
 	case <-time.After(200 * time.Millisecond):
