@@ -240,30 +240,6 @@ func (e *Editor) findUnityProcessDarwin(projectPath string) (int, error) {
 	return findUnityProcessFromPSOutput(string(output), projectPath), nil
 }
 
-func (e *Editor) findUnityProcessWindows(projectPath string) (int, error) {
-	// Use wmic to find Unity process
-	cmd := exec.Command("wmic", "process", "where", "name='Unity.exe'", "get", "ProcessId,CommandLine", "/format:csv")
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, nil
-	}
-
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, projectPath) {
-			fields := strings.Split(strings.TrimSpace(line), ",")
-			if len(fields) >= 3 {
-				var pid int
-				if _, err := fmt.Sscanf(fields[len(fields)-1], "%d", &pid); err == nil {
-					return pid, nil
-				}
-			}
-		}
-	}
-
-	return 0, nil
-}
-
 func (e *Editor) findUnityProcessLinux(projectPath string) (int, error) {
 	return e.findUnityProcessDarwin(projectPath)
 }
