@@ -318,6 +318,10 @@ func normalizedExecutableName(process processInfo) string {
 }
 
 func commandTargetsProject(command, projectPath string) bool {
+	return commandTargetsProjectForOS(command, projectPath, runtime.GOOS)
+}
+
+func commandTargetsProjectForOS(command, projectPath, goos string) bool {
 	match := projectPathArgumentPattern.FindStringSubmatch(command)
 	if match == nil {
 		return false
@@ -329,8 +333,8 @@ func commandTargetsProject(command, projectPath string) bool {
 			break
 		}
 	}
-	if runtime.GOOS == "windows" {
-		return normalizeWindowsPath(filepath.Clean(candidate)) == normalizeWindowsPath(filepath.Clean(projectPath))
+	if goos == "windows" {
+		return normalizeWindowsPath(strings.TrimSpace(candidate)) == normalizeWindowsPath(strings.TrimSpace(projectPath))
 	}
 	normalizedCandidate, err := normalizeProjectPath(candidate)
 	if err != nil {

@@ -84,6 +84,14 @@ func runtimeDoctorEditorCommand(project string) string {
 	return `/Applications/Unity/Unity.app/Contents/MacOS/Unity -projectPath "` + project + `"`
 }
 
+func TestCommandTargetsWindowsProject(t *testing.T) {
+	project := `C:\Users\runneradmin\AppData\Local\Temp\Project\001`
+	command := `C:\Program Files\Unity\Hub\Editor\6000.0.0f1\Editor\unity.exe -projectPath "` + project + `"`
+	if !isUnityEditorCommandLine(command) || !commandTargetsProjectForOS(command, project, "windows") {
+		t.Fatalf("Windows Unity command must target project: %q", command)
+	}
+}
+
 func TestRuntimeDoctorKeepsActiveILPP(t *testing.T) {
 	project := makeRuntimeDoctorProject(t)
 	pidFile := filepath.Join(project, "Library", "ilpp.pid")
