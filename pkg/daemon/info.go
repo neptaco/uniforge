@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 )
 
 // Transport represents the IPC transport type.
@@ -67,7 +68,42 @@ func writeInfo(config Config, info Info) error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0o644)
+	temp, err := os.CreateTemp(filepath.Dir(path), ".daemon-info-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func removeInfoIfPID(config Config, pid int) error {
+	info, err := ReadInfo(config)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.PID != pid {
+		return nil
+	}
+	return removeInfo(config)
 }
 
 func removeInfo(config Config) error {
