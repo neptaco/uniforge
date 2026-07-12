@@ -80,6 +80,7 @@ type pendingRequest struct {
 	daemonRequestID           string
 	clientRequestID           string
 	clientConn                *serverConnection
+	targetConn                *serverConnection
 	targetProjectID           string
 	tool                      string
 	args                      map[string]any
@@ -255,7 +256,7 @@ func (s *Server) handleNotification(conn *serverConnection, envelope rpcEnvelope
 	case "unity.busy":
 		var params unityBusyParams
 		if err := json.Unmarshal(envelope.Params, &params); err == nil {
-			s.handleUnityBusy(params)
+			s.handleUnityBusy(conn, params)
 		}
 	case "unity.pong":
 		return
@@ -272,6 +273,10 @@ func (s *Server) handleResponse(conn *serverConnection, envelope rpcEnvelope) {
 
 	s.mu.Lock()
 	pending, ok := s.pending[requestID]
+	if ok && pending.targetConn != conn {
+		s.mu.Unlock()
+		return
+	}
 	s.mu.Unlock()
 	if !ok {
 		return
@@ -382,6 +387,7 @@ func (s *Server) handleClientToolCall(conn *serverConnection, clientRequestID st
 		daemonRequestID: daemonRequestID,
 		clientRequestID: clientRequestID,
 		clientConn:      conn,
+		targetConn:      targetConn,
 		targetProjectID: targetConn.projectID,
 		tool:            params.Tool,
 		args:            params.Args,
@@ -440,12 +446,12 @@ func (s *Server) resolveToolTarget(tool string, projectID string) (*serverConnec
 	}
 }
 
-func (s *Server) handleUnityBusy(params unityBusyParams) {
+func (s *Server) handleUnityBusy(conn *serverConnection, params unityBusyParams) {
 	requestID := fmt.Sprintf("%v", params.RequestID)
 
 	s.mu.Lock()
 	pending, ok := s.pending[requestID]
-	if !ok {
+	if !ok || pending.targetConn != conn {
 		s.mu.Unlock()
 		return
 	}
@@ -478,6 +484,7 @@ func (s *Server) handleUnityBusy(params unityBusyParams) {
 			s.mu.Unlock()
 			return
 		}
+		latest.targetConn = target
 		s.mu.Unlock()
 		_ = target.send(newRequest(requestID, "daemon.executeTool", map[string]any{
 			"tool": latest.tool,
@@ -507,6 +514,7 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 		}
 
 		pending.awaitingReconnection = false
+		pending.targetConn = conn
 		if pending.awaitingUnityContinuation {
 			continue
 		}

@@ -43,7 +43,15 @@ func ReadInfo(config Config) (*Info, error) {
 		return nil, err
 	}
 
-	content, err := os.ReadFile(path)
+	var content []byte
+	readDeadline := time.Now().Add(2 * time.Second)
+	for {
+		content, err = os.ReadFile(path)
+		if err == nil || runtime.GOOS != "windows" || errors.Is(err, os.ErrNotExist) || time.Now().After(readDeadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err != nil {
 		return nil, err
 	}
