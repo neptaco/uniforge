@@ -287,6 +287,18 @@ uniforge logs --full-trace
 uniforge logs --editor
 ```
 
+### Diagnose Stale Unity Runtime State
+
+```bash
+# Read-only diagnosis
+uniforge doctor unity ./MyProject
+
+# Remove only verified stale files and stop orphan licensing clients
+uniforge doctor unity ./MyProject --fix
+```
+
+The doctor never removes runtime files when the process state cannot be verified or a matching Unity process is active. Use `uniforge clean unity` when you explicitly want to remove a selected runtime file.
+
 ### Manage Unity License
 
 ```bash

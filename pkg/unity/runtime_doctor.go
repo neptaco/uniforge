@@ -1,0 +1,297 @@
+package unity
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+)
+
+const (
+	RuntimeIssueActiveEditor          = "active_editor"
+	RuntimeIssueStaleLockfile         = "stale_lockfile"
+	RuntimeIssueUnverifiedLockfile    = "unverified_lockfile"
+	RuntimeIssueActiveILPP            = "active_ilpp"
+	RuntimeIssueStaleILPPPid          = "stale_ilpp_pid"
+	RuntimeIssueOrphanLicensingClient = "orphan_licensing_client"
+	RuntimeIssueProcessScanFailed     = "process_scan_failed"
+)
+
+const listProcessesPowerShell = `$ErrorActionPreference = 'Stop'
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$processes = @(Get-CimInstance Win32_Process | Select-Object ProcessId, Name, CommandLine)
+ConvertTo-Json -InputObject $processes -Compress`
+
+type RuntimeDoctor struct {
+	listProcesses processLister
+	stopProcess   processStopper
+}
+
+type processLister func() ([]processInfo, error)
+type processStopper func(pid int) error
+
+type processInfo struct {
+	PID     int
+	Name    string
+	Command string
+}
+
+type RuntimeDoctorResult struct {
+	ProjectPath string
+	EditorPID   int
+	Issues      []RuntimeIssue
+	Fixes       []RuntimeFix
+}
+
+type RuntimeIssue struct {
+	Kind     string
+	Message  string
+	Path     string
+	PID      int
+	Blocking bool
+	Fixed    bool
+}
+
+type RuntimeFix struct {
+	Kind    string
+	Message string
+	Path    string
+	PID     int
+}
+
+func NewRuntimeDoctor() *RuntimeDoctor {
+	return &RuntimeDoctor{listProcesses: listRuntimeProcesses, stopProcess: stopRuntimeProcess}
+}
+
+func (d *RuntimeDoctor) Check(projectPath string, fix bool) (*RuntimeDoctorResult, error) {
+	absPath, err := filepath.Abs(projectPath)
+	if err != nil {
+		return nil, fmt.Errorf("get absolute project path: %w", err)
+	}
+	result := &RuntimeDoctorResult{ProjectPath: absPath}
+	processes, processErr := d.listProcesses()
+	processesKnown := processErr == nil
+	if processErr != nil {
+		result.addIssue(RuntimeIssue{Kind: RuntimeIssueProcessScanFailed, Message: fmt.Sprintf("failed to list processes: %v", processErr)})
+	} else {
+		result.EditorPID = findUnityProcessInProcesses(processes, absPath)
+	}
+
+	processByPID := make(map[int]processInfo, len(processes))
+	hasAnyUnityEditor := false
+	hasOpaqueUnityEditor := false
+	var licensingClients []processInfo
+	for _, process := range processes {
+		processByPID[process.PID] = process
+		hasAnyUnityEditor = hasAnyUnityEditor || isUnityEditorCommandLine(process.Command)
+		hasOpaqueUnityEditor = hasOpaqueUnityEditor || (isUnityEditorProcessName(process.Name) && strings.TrimSpace(process.Command) == "")
+		if isUnityLicensingClient(process) {
+			licensingClients = append(licensingClients, process)
+		}
+	}
+
+	if err := d.checkLockfile(result, absPath, processesKnown && !hasOpaqueUnityEditor, fix); err != nil {
+		return result, err
+	}
+	if err := d.checkILPPPid(result, absPath, processByPID, processesKnown, fix); err != nil {
+		return result, err
+	}
+	if err := d.checkLicensingClients(result, hasAnyUnityEditor, licensingClients, processesKnown && !hasOpaqueUnityEditor, fix); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (d *RuntimeDoctor) checkLockfile(result *RuntimeDoctorResult, projectPath string, processesKnown, fix bool) error {
+	lockfile := filepath.Join(projectPath, "Temp", "UnityLockfile")
+	if _, err := os.Stat(lockfile); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat Unity lockfile: %w", err)
+	}
+	if !processesKnown {
+		result.addIssue(RuntimeIssue{Kind: RuntimeIssueUnverifiedLockfile, Message: "Unity lockfile exists, but process state could not be verified", Path: lockfile, Blocking: true})
+		return nil
+	}
+	if result.EditorPID != 0 {
+		result.addIssue(RuntimeIssue{Kind: RuntimeIssueActiveEditor, Message: "Unity Editor is running for this project", Path: lockfile, PID: result.EditorPID, Blocking: true})
+		return nil
+	}
+	index := result.addIssue(RuntimeIssue{Kind: RuntimeIssueStaleLockfile, Message: "stale Unity lockfile exists without a matching Unity Editor process", Path: lockfile, Blocking: true})
+	if fix {
+		if err := os.Remove(lockfile); err != nil {
+			return fmt.Errorf("remove stale Unity lockfile %s: %w", lockfile, err)
+		}
+		result.Issues[index].Fixed = true
+		result.addFix(RuntimeFix{Kind: RuntimeIssueStaleLockfile, Message: "removed stale Unity lockfile", Path: lockfile})
+	}
+	return nil
+}
+
+func (d *RuntimeDoctor) checkILPPPid(result *RuntimeDoctorResult, projectPath string, processes map[int]processInfo, processesKnown, fix bool) error {
+	pidFile := filepath.Join(projectPath, "Library", "ilpp.pid")
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read ILPP pid file: %w", err)
+	}
+	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if !processesKnown {
+		result.addIssue(RuntimeIssue{Kind: RuntimeIssueProcessScanFailed, Message: "ILPP pid file exists, but process state could not be verified", Path: pidFile, PID: pid, Blocking: true})
+		return nil
+	}
+	if parseErr == nil {
+		if process, ok := processes[pid]; ok {
+			if isUnityILPPProcess(process) {
+				result.addIssue(RuntimeIssue{Kind: RuntimeIssueActiveILPP, Message: "Unity IL post processor is still running", Path: pidFile, PID: pid})
+				return nil
+			}
+			if strings.TrimSpace(process.Command) == "" {
+				result.addIssue(RuntimeIssue{Kind: RuntimeIssueProcessScanFailed, Message: "ILPP pid is active, but its command line could not be inspected", Path: pidFile, PID: pid, Blocking: true})
+				return nil
+			}
+		}
+	}
+	index := result.addIssue(RuntimeIssue{Kind: RuntimeIssueStaleILPPPid, Message: "stale Unity IL post processor pid file exists", Path: pidFile, PID: pid, Blocking: true})
+	if fix {
+		if err := os.Remove(pidFile); err != nil {
+			return fmt.Errorf("remove stale ILPP pid file %s: %w", pidFile, err)
+		}
+		result.Issues[index].Fixed = true
+		result.addFix(RuntimeFix{Kind: RuntimeIssueStaleILPPPid, Message: "removed stale Unity IL post processor pid file", Path: pidFile})
+	}
+	return nil
+}
+
+func (d *RuntimeDoctor) checkLicensingClients(result *RuntimeDoctorResult, hasAnyUnityEditor bool, clients []processInfo, processesKnown, fix bool) error {
+	if !processesKnown || hasAnyUnityEditor {
+		return nil
+	}
+	for _, process := range clients {
+		index := result.addIssue(RuntimeIssue{Kind: RuntimeIssueOrphanLicensingClient, Message: "orphan Unity licensing client is running without any Unity Editor process", PID: process.PID, Blocking: true})
+		if !fix {
+			continue
+		}
+		if err := d.stopProcess(process.PID); err != nil {
+			return fmt.Errorf("stop orphan Unity licensing client pid %d: %w", process.PID, err)
+		}
+		result.Issues[index].Fixed = true
+		result.addFix(RuntimeFix{Kind: RuntimeIssueOrphanLicensingClient, Message: "stopped orphan Unity licensing client", PID: process.PID})
+	}
+	return nil
+}
+
+func (r *RuntimeDoctorResult) HasUnfixedBlockingIssues() bool {
+	for _, issue := range r.Issues {
+		if issue.Blocking && !issue.Fixed {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *RuntimeDoctorResult) HasIssues() bool { return len(r.Issues) > 0 }
+
+func (r *RuntimeDoctorResult) addIssue(issue RuntimeIssue) int {
+	r.Issues = append(r.Issues, issue)
+	return len(r.Issues) - 1
+}
+
+func (r *RuntimeDoctorResult) addFix(fix RuntimeFix) { r.Fixes = append(r.Fixes, fix) }
+
+func listRuntimeProcesses() ([]processInfo, error) {
+	if runtime.GOOS == "windows" {
+		return listRuntimeProcessesWindows()
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+	output, err := exec.Command("ps", "-ax", "-o", "pid=,command=").Output()
+	if err != nil {
+		return nil, err
+	}
+	return parsePSRuntimeProcesses(string(output)), nil
+}
+
+func listRuntimeProcessesWindows() ([]processInfo, error) {
+	output, err := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", listProcessesPowerShell).Output()
+	if err != nil {
+		return nil, fmt.Errorf("list processes with PowerShell/CIM: %w", err)
+	}
+	var rows []struct {
+		ProcessID   int     `json:"ProcessId"`
+		Name        string  `json:"Name"`
+		CommandLine *string `json:"CommandLine"`
+	}
+	if err := json.Unmarshal(output, &rows); err != nil {
+		return nil, fmt.Errorf("parse PowerShell/CIM process output: %w", err)
+	}
+	processes := make([]processInfo, 0, len(rows))
+	for _, row := range rows {
+		command := ""
+		if row.CommandLine != nil {
+			command = *row.CommandLine
+		}
+		processes = append(processes, processInfo{PID: row.ProcessID, Name: row.Name, Command: command})
+	}
+	return processes, nil
+}
+
+func parsePSRuntimeProcesses(output string) []processInfo {
+	var processes []processInfo
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err == nil {
+			processes = append(processes, processInfo{PID: pid, Name: filepath.Base(fields[1]), Command: strings.Join(fields[1:], " ")})
+		}
+	}
+	return processes
+}
+
+func findUnityProcessInProcesses(processes []processInfo, projectPath string) int {
+	for _, process := range processes {
+		command := process.Command
+		if runtime.GOOS == "windows" {
+			if isUnityEditorCommandLine(command) && strings.Contains(normalizeWindowsPath(command), normalizeWindowsPath(projectPath)) {
+				return process.PID
+			}
+		} else if isUnityEditorCommandLine(command) && strings.Contains(command, projectPath) {
+			return process.PID
+		}
+	}
+	return 0
+}
+
+func isUnityLicensingClient(process processInfo) bool {
+	value := strings.ToLower(process.Name + " " + process.Command)
+	return strings.Contains(value, "unity.licensing.client") || strings.Contains(value, "unitylicensingclient")
+}
+
+func isUnityEditorProcessName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name == "unity" || name == "unity.exe"
+}
+
+func isUnityILPPProcess(process processInfo) bool {
+	value := strings.ToLower(process.Name + " " + process.Command)
+	return strings.Contains(value, "unity.ilpp") || strings.Contains(value, "unity.assemblypostprocessor") || strings.Contains(value, "unity ilpp")
+}
+
+func stopRuntimeProcess(pid int) error {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return process.Kill()
+}

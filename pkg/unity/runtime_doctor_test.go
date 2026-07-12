@@ -1,0 +1,176 @@
+package unity
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestRuntimeDoctorFixesStaleFiles(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
+	pidFile := filepath.Join(project, "Library", "ilpp.pid")
+	writeRuntimeFile(t, lockfile, "")
+	writeRuntimeFile(t, pidFile, "4242\n")
+	doctor := testRuntimeDoctor(nil, nil)
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HasUnfixedBlockingIssues() || len(result.Fixes) != 2 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertRuntimeFileMissing(t, lockfile)
+	assertRuntimeFileMissing(t, pidFile)
+}
+
+func TestRuntimeDoctorNeverFixesActiveEditorLockfile(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
+	writeRuntimeFile(t, lockfile, "")
+	doctor := testRuntimeDoctor([]processInfo{{PID: 123, Command: "/Applications/Unity/Unity.app/Contents/MacOS/Unity -projectPath " + project}}, nil)
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.HasUnfixedBlockingIssues() || len(result.Fixes) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertRuntimeFileExists(t, lockfile)
+}
+
+func TestRuntimeDoctorKeepsActiveILPP(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	pidFile := filepath.Join(project, "Library", "ilpp.pid")
+	writeRuntimeFile(t, pidFile, "88\n")
+	doctor := testRuntimeDoctor([]processInfo{{PID: 88, Name: "Unity.ILPP.Runner", Command: "Unity.ILPP.Runner"}}, nil)
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HasUnfixedBlockingIssues() || len(result.Fixes) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertRuntimeFileExists(t, pidFile)
+}
+
+func TestRuntimeDoctorStopsOrphanLicensingClient(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	var stopped int
+	doctor := testRuntimeDoctor([]processInfo{{PID: 99, Name: "Unity.Licensing.Client", Command: "Unity.Licensing.Client"}}, func(pid int) error { stopped = pid; return nil })
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HasUnfixedBlockingIssues() || stopped != 99 {
+		t.Fatalf("unexpected result: %+v, stopped=%d", result, stopped)
+	}
+}
+
+func TestRuntimeDoctorDoesNotStopLicensingClientWhileAnyEditorRuns(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	processes := []processInfo{
+		{PID: 77, Command: "/Applications/Unity/Unity.app/Contents/MacOS/Unity -projectPath /other"},
+		{PID: 99, Name: "Unity.Licensing.Client", Command: "Unity.Licensing.Client"},
+	}
+	doctor := testRuntimeDoctor(processes, func(pid int) error { t.Fatalf("unexpected stop %d", pid); return nil })
+	result, err := doctor.Check(project, true)
+	if err != nil || result.HasIssues() {
+		t.Fatalf("unexpected result: %+v, err=%v", result, err)
+	}
+}
+
+func TestRuntimeDoctorDoesNotFixWhenProcessScanFails(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
+	pidFile := filepath.Join(project, "Library", "ilpp.pid")
+	writeRuntimeFile(t, lockfile, "")
+	writeRuntimeFile(t, pidFile, "88\n")
+	doctor := &RuntimeDoctor{listProcesses: func() ([]processInfo, error) { return nil, errors.New("scan failed") }, stopProcess: func(int) error { return nil }}
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.HasUnfixedBlockingIssues() || len(result.Fixes) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertRuntimeFileExists(t, lockfile)
+	assertRuntimeFileExists(t, pidFile)
+}
+
+func TestRuntimeDoctorDoesNotFixLockfileWhenUnityCommandLineIsUnavailable(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
+	writeRuntimeFile(t, lockfile, "")
+	doctor := testRuntimeDoctor([]processInfo{{PID: 123, Name: "Unity.exe"}}, nil)
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.HasUnfixedBlockingIssues() || len(result.Fixes) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertRuntimeFileExists(t, lockfile)
+}
+
+func TestRuntimeDoctorDoesNotFixILPPPidWhenCommandLineIsUnavailable(t *testing.T) {
+	project := makeRuntimeDoctorProject(t)
+	pidFile := filepath.Join(project, "Library", "ilpp.pid")
+	writeRuntimeFile(t, pidFile, "88\n")
+	doctor := testRuntimeDoctor([]processInfo{{PID: 88, Name: "dotnet"}}, nil)
+	result, err := doctor.Check(project, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.HasUnfixedBlockingIssues() || len(result.Fixes) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	assertRuntimeFileExists(t, pidFile)
+}
+
+func TestParsePSRuntimeProcesses(t *testing.T) {
+	got := parsePSRuntimeProcesses("  123 /Applications/Unity/Unity -projectPath /tmp/project\ninvalid\n")
+	if len(got) != 1 || got[0].PID != 123 || got[0].Name != "Unity" {
+		t.Fatalf("unexpected processes: %+v", got)
+	}
+}
+
+func testRuntimeDoctor(processes []processInfo, stopper processStopper) *RuntimeDoctor {
+	if stopper == nil {
+		stopper = func(int) error { return nil }
+	}
+	return &RuntimeDoctor{listProcesses: func() ([]processInfo, error) { return processes, nil }, stopProcess: stopper}
+}
+
+func makeRuntimeDoctorProject(t *testing.T) string {
+	t.Helper()
+	project := t.TempDir()
+	for _, dir := range []string{"Temp", "Library"} {
+		if err := os.MkdirAll(filepath.Join(project, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return project
+}
+
+func writeRuntimeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertRuntimeFileExists(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected %s to exist: %v", path, err)
+	}
+}
+
+func assertRuntimeFileMissing(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be missing, got %v", path, err)
+	}
+}
