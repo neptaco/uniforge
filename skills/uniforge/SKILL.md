@@ -13,6 +13,8 @@ It has two modes of operation:
 
 **Setup:** if `uniforge --version` fails, or the Unity-side plugin / MCP connection is not set up yet, read [references/setup.md](references/setup.md) for installation and first-time workflow.
 
+**CI:** for GitHub Actions workflows (installing the CLI on runners, test/build jobs, license handling), read [references/github-actions.md](references/github-actions.md).
+
 ## Checking status and diagnosing problems
 
 | Command | What it tells you |
