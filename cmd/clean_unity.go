@@ -20,7 +20,7 @@ var cleanUnityCmd = &cobra.Command{
 	Long: `Clean stale Unity project runtime files.
 
 The command only touches explicitly selected targets and verifies that the
-Unity Editor is not running for the project before removing files.
+Unity lockfile is not held by a running Editor before removing files.
 
 Supported targets:
   lockfile  Temp/UnityLockfile

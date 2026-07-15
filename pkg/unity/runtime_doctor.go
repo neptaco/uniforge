@@ -34,6 +34,7 @@ ConvertTo-Json -InputObject $processes -Compress`
 type RuntimeDoctor struct {
 	listProcesses processLister
 	stopProcess   processStopper
+	probeLockfile unityLockfileProbe
 }
 
 type processLister func() ([]processInfo, error)
@@ -69,7 +70,11 @@ type RuntimeFix struct {
 }
 
 func NewRuntimeDoctor() *RuntimeDoctor {
-	return &RuntimeDoctor{listProcesses: listRuntimeProcesses, stopProcess: stopRuntimeProcess}
+	return &RuntimeDoctor{
+		listProcesses: listRuntimeProcesses,
+		stopProcess:   stopRuntimeProcess,
+		probeLockfile: probeUnityLockfile,
+	}
 }
 
 func (d *RuntimeDoctor) Check(projectPath string, fix bool) (*RuntimeDoctorResult, error) {
@@ -101,7 +106,7 @@ func (d *RuntimeDoctor) Check(projectPath string, fix bool) (*RuntimeDoctorResul
 		}
 	}
 
-	if err := d.checkLockfile(result, absPath, processesKnown && !hasOpaqueUnityEditor, fix); err != nil {
+	if err := d.checkLockfile(result, absPath, fix); err != nil {
 		return result, err
 	}
 	if err := d.checkILPPPid(result, absPath, processByPID, processesKnown, fix); err != nil {
@@ -113,7 +118,7 @@ func (d *RuntimeDoctor) Check(projectPath string, fix bool) (*RuntimeDoctorResul
 	return result, nil
 }
 
-func (d *RuntimeDoctor) checkLockfile(result *RuntimeDoctorResult, projectPath string, processesKnown, fix bool) error {
+func (d *RuntimeDoctor) checkLockfile(result *RuntimeDoctorResult, projectPath string, fix bool) error {
 	lockfile := filepath.Join(projectPath, "Temp", "UnityLockfile")
 	if _, err := os.Stat(lockfile); err != nil {
 		if os.IsNotExist(err) {
@@ -121,11 +126,16 @@ func (d *RuntimeDoctor) checkLockfile(result *RuntimeDoctorResult, projectPath s
 		}
 		return fmt.Errorf("stat Unity lockfile: %w", err)
 	}
-	if !processesKnown {
-		result.addIssue(RuntimeIssue{Kind: RuntimeIssueUnverifiedLockfile, Message: "Unity lockfile exists, but process state could not be verified", Path: lockfile, Blocking: true})
+	probeLockfile := d.probeLockfile
+	if probeLockfile == nil {
+		probeLockfile = probeUnityLockfile
+	}
+	held, err := probeLockfile(lockfile)
+	if err != nil {
+		result.addIssue(RuntimeIssue{Kind: RuntimeIssueUnverifiedLockfile, Message: fmt.Sprintf("Unity lockfile exists, but its OS lock state could not be inspected: %v", err), Path: lockfile, Blocking: true})
 		return nil
 	}
-	if result.EditorPID != 0 {
+	if held {
 		result.addIssue(RuntimeIssue{Kind: RuntimeIssueActiveEditor, Message: "Unity Editor is running for this project", Path: lockfile, PID: result.EditorPID, Blocking: true})
 		return nil
 	}
