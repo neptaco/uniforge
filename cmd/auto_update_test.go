@@ -12,7 +12,7 @@ func TestAutomaticUpdateEligibilityProtectsMachineReadableOutput(t *testing.T) {
 	viper.Set("update.check", true)
 	t.Cleanup(func() { viper.Set("update.check", nil) })
 	withoutEnv(t, "UNIFORGE_NO_UPDATE_CHECK")
-	withoutEnv(t, "CI")
+	withoutCIEnv(t)
 	originalStdoutTTY := stdoutIsTerminal
 	stdoutIsTerminal = func() bool { return true }
 	t.Cleanup(func() { stdoutIsTerminal = originalStdoutTTY })
@@ -47,7 +47,7 @@ func TestAutomaticUpdateEligibilityProtectsAutoDetectedTSV(t *testing.T) {
 	viper.Set("update.check", true)
 	t.Cleanup(func() { viper.Set("update.check", nil) })
 	withoutEnv(t, "UNIFORGE_NO_UPDATE_CHECK")
-	withoutEnv(t, "CI")
+	withoutCIEnv(t)
 	originalStdoutTTY := stdoutIsTerminal
 	stdoutIsTerminal = func() bool { return false }
 	t.Cleanup(func() { stdoutIsTerminal = originalStdoutTTY })
@@ -60,6 +60,21 @@ func TestAutomaticUpdateEligibilityProtectsAutoDetectedTSV(t *testing.T) {
 	root.AddCommand(project)
 	if automaticUpdateEligible(list) {
 		t.Fatal("non-TTY project list defaults to TSV and must be protected")
+	}
+}
+
+func TestAutomaticUpdateEligibilityDisabledInGitHubActions(t *testing.T) {
+	viper.Set("update.check", true)
+	t.Cleanup(func() { viper.Set("update.check", nil) })
+	withoutEnv(t, "UNIFORGE_NO_UPDATE_CHECK")
+	withoutCIEnv(t)
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	root := &cobra.Command{Use: "uniforge"}
+	plain := &cobra.Command{Use: "doctor"}
+	root.AddCommand(plain)
+	if automaticUpdateEligible(plain) {
+		t.Fatal("GitHub Actions must suppress automatic update checks")
 	}
 }
 
@@ -96,4 +111,11 @@ func withoutEnv(t *testing.T, name string) {
 			_ = os.Unsetenv(name)
 		}
 	})
+}
+
+func withoutCIEnv(t *testing.T) {
+	t.Helper()
+	for _, name := range ciEnvironmentVariables {
+		withoutEnv(t, name)
+	}
 }

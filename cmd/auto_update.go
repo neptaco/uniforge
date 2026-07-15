@@ -21,6 +21,8 @@ const backgroundUpdateCheckCommand = "__update-check"
 
 var pendingAutoUpdateNotice *updater.AutoUpdateNotice
 
+var ciEnvironmentVariables = []string{"CI", "GITHUB_ACTIONS", "BUILD_NUMBER", "TEAMCITY_VERSION"}
+
 var backgroundUpdateCheckCmd = &cobra.Command{
 	Use:    backgroundUpdateCheckCommand,
 	Hidden: true,
@@ -170,7 +172,7 @@ func startBackgroundUpdateCheck() {
 }
 
 func isCI() bool {
-	for _, name := range []string{"CI", "GITHUB_ACTIONS", "BUILD_NUMBER", "TEAMCITY_VERSION"} {
+	for _, name := range ciEnvironmentVariables {
 		if value, ok := os.LookupEnv(name); ok && value != "" && value != "0" && !strings.EqualFold(value, "false") {
 			return true
 		}
