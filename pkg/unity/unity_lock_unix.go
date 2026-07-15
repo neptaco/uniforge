@@ -9,12 +9,16 @@ import (
 	"syscall"
 )
 
-func probeUnityLockfile(path string) (bool, error) {
+func probeUnityLockfile(path string) (held bool, resultErr error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return false, err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); resultErr == nil && err != nil {
+			resultErr = fmt.Errorf("close probe file: %w", err)
+		}
+	}()
 
 	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 	if err == nil {
