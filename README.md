@@ -113,6 +113,33 @@ uniforge update --version v0.9.0
 
 Package-manager and development builds are not modified by `uniforge update`.
 
+Released builds also check for new UniForge versions in the background. The
+check runs at most once every 24 hours and never delays the command being run.
+If an update is found, a later successful interactive command prints a short
+notice to stderr. The same release is not mentioned again for seven days.
+
+Automatic checks and notices are disabled in CI and for machine-readable or
+protocol output, including JSON, YAML, TSV, `tool`, `mcp serve`, and shell
+completion. This protection still applies when notifications are configured as
+`always`, because PTYs and some process runners combine stdout and stderr.
+
+Configure the behavior in `~/.uniforge.yaml`:
+
+```yaml
+update:
+  check: true
+  check_interval: 24h
+  notify: auto # auto, always, or never
+  remind_interval: 168h
+```
+
+The equivalent environment variables are
+`UNIFORGE_UPDATE_CHECK`, `UNIFORGE_UPDATE_CHECK_INTERVAL`,
+`UNIFORGE_UPDATE_NOTIFY`, and `UNIFORGE_UPDATE_REMIND_INTERVAL`. Set
+`UNIFORGE_NO_UPDATE_CHECK=1` to disable automatic network checks entirely.
+Checks only request public release metadata from GitHub; UniForge does not send
+an identifier or telemetry with the request.
+
 ### Manual download
 
 Download the latest release from [GitHub Releases](https://github.com/neptaco/uniforge/releases).
