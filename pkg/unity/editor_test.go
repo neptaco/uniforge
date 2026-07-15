@@ -2,9 +2,76 @@ package unity
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestCheckNotRunningSkipsLockProbeWithoutLockfile(t *testing.T) {
+	projectPath := t.TempDir()
+
+	err := checkNotRunning(projectPath, func(string) (bool, error) {
+		t.Fatal("lock probe should not run without a lockfile")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("checkNotRunning failed: %v", err)
+	}
+}
+
+func TestCheckNotRunningAllowsStaleLockfile(t *testing.T) {
+	projectPath, lockfile := createEditorLockfile(t)
+
+	err := checkNotRunning(projectPath, func(gotLockfile string) (bool, error) {
+		if gotLockfile != lockfile {
+			t.Fatalf("lockfile path = %q, want %q", gotLockfile, lockfile)
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("checkNotRunning failed: %v", err)
+	}
+	if _, err := os.Stat(lockfile); err != nil {
+		t.Fatalf("stale lockfile should be left for Unity to handle: %v", err)
+	}
+}
+
+func TestCheckNotRunningRejectsActiveEditor(t *testing.T) {
+	projectPath, _ := createEditorLockfile(t)
+
+	err := checkNotRunning(projectPath, func(string) (bool, error) {
+		return true, nil
+	})
+	if err == nil {
+		t.Fatal("expected active Unity Editor error")
+	}
+}
+
+func TestCheckNotRunningRejectsUnverifiedLockfile(t *testing.T) {
+	projectPath, _ := createEditorLockfile(t)
+
+	err := checkNotRunning(projectPath, func(string) (bool, error) {
+		return false, errors.New("lock probe failed")
+	})
+	if err == nil {
+		t.Fatal("expected lock inspection error")
+	}
+}
+
+func createEditorLockfile(t *testing.T) (string, string) {
+	t.Helper()
+	projectPath := t.TempDir()
+	tempDir := filepath.Join(projectPath, "Temp")
+	if err := os.MkdirAll(tempDir, 0o755); err != nil {
+		t.Fatalf("create Temp directory: %v", err)
+	}
+	lockfile := filepath.Join(tempDir, "UnityLockfile")
+	if err := os.WriteFile(lockfile, []byte("lock"), 0o644); err != nil {
+		t.Fatalf("create lockfile: %v", err)
+	}
+	return projectPath, lockfile
+}
 
 func TestFindUnityProcessFromPSOutputMatchesProjectPathSafely(t *testing.T) {
 	projectPath := "/Projects/O'Brien/Test Project"

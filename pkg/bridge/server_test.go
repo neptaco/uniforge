@@ -3,7 +3,10 @@ package bridge
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -40,6 +43,8 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 		},
 		timeout: requestTimeout,
 	}
+	unityConnection := &serverConnection{id: "unity-1"}
+	pending.targetConn = unityConnection
 	pending.timeoutTimer = time.AfterFunc(requestTimeout, func() {
 		_ = pending.clientConn.send(newErrorResponse(clientRequestID, ToolTimeout, "tool execution timed out", nil))
 		server.clearPending(requestID)
@@ -59,7 +64,7 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 		t.Fatalf("marshal pending result: %v", err)
 	}
 
-	server.handleResponse(&serverConnection{id: "unity-1"}, rpcEnvelope{
+	server.handleResponse(unityConnection, rpcEnvelope{
 		ID:     responseID,
 		Result: result,
 	})
@@ -91,6 +96,45 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 	case <-readDone:
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("reader goroutine did not exit")
+	}
+}
+
+func TestHandleResponseRejectsDifferentUnityConnection(t *testing.T) {
+	server := NewServer()
+	expected := &serverConnection{id: "unity-expected"}
+	server.pending["d-1"] = &pendingRequest{
+		daemonRequestID: "d-1",
+		targetConn:      expected,
+	}
+
+	responseID, err := json.Marshal("d-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := json.Marshal(unityToolResultEnvelope{Success: true, Result: "forged"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.handleResponse(&serverConnection{id: "unity-attacker"}, rpcEnvelope{ID: responseID, Result: result})
+
+	server.mu.Lock()
+	_, stillPending := server.pending["d-1"]
+	server.mu.Unlock()
+	if !stillPending {
+		t.Fatal("response from a different Unity connection completed the pending request")
+	}
+}
+
+func TestHandleUnityBusyRejectsDifferentUnityConnection(t *testing.T) {
+	server := NewServer()
+	expected := &serverConnection{id: "unity-expected"}
+	pending := &pendingRequest{daemonRequestID: "d-1", targetConn: expected}
+	server.pending["d-1"] = pending
+
+	server.handleUnityBusy(&serverConnection{id: "unity-attacker"}, unityBusyParams{RequestID: "d-1", RetryAfterMS: 1})
+
+	if pending.retryCount != 0 || pending.busyRetryTimer != nil {
+		t.Fatal("busy notification from a different Unity connection changed the pending request")
 	}
 }
 
@@ -151,4 +195,185 @@ func TestHandleDisconnectDoesNotRemoveReplacementClientConnection(t *testing.T) 
 	if got := server.clientConns["client-1"]; got != replacement {
 		t.Fatal("replacement client connection was removed by the old connection's disconnect")
 	}
+}
+
+func TestResumePendingRequestsKeepsWaitingWhenConnectionDisappears(t *testing.T) {
+	server := NewServer()
+	pending := &pendingRequest{
+		daemonRequestID:      "d-1",
+		targetProjectID:      "project-1",
+		awaitingReconnection: true,
+	}
+	server.pending["d-1"] = pending
+
+	server.resumePendingRequests("project-1", nil)
+
+	if !pending.awaitingReconnection || pending.targetConn != nil {
+		t.Fatalf("pending request lost reconnection state: %+v", pending)
+	}
+}
+
+func TestResumePendingRequestsDoesNotHoldServerLockWhileSending(t *testing.T) {
+	server := NewServer()
+	serverSide, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	target := &serverConnection{id: "unity-1", conn: serverSide, projectID: "project-1"}
+	server.unityConns["project-1"] = target
+	server.pending["d-1"] = &pendingRequest{
+		daemonRequestID:      "d-1",
+		targetProjectID:      "project-1",
+		tool:                 "test-tool",
+		awaitingReconnection: true,
+	}
+
+	resumeDone := make(chan struct{})
+	go func() {
+		server.resumePendingRequests("project-1", nil)
+		close(resumeDone)
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	lockAcquired := make(chan int, 1)
+	go func() {
+		server.mu.Lock()
+		pendingCount := len(server.pending)
+		server.mu.Unlock()
+		lockAcquired <- pendingCount
+	}()
+	select {
+	case pendingCount := <-lockAcquired:
+		if pendingCount != 1 {
+			t.Fatalf("pending count = %d, want 1", pendingCount)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("server lock was held by a blocked connection write")
+	}
+
+	_ = peer.Close()
+	select {
+	case <-resumeDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("resume did not return after connection closed")
+	}
+}
+
+func TestStopClosesAcceptedUnregisteredConnection(t *testing.T) {
+	server := NewServer()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- server.Serve(listener) }()
+
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		server.mu.Lock()
+		count := len(server.connections)
+		server.mu.Unlock()
+		if count == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("accepted connection was not tracked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := server.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("unregistered connection remained open after Stop")
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("Serve returned error: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Serve did not return after Stop")
+	}
+}
+
+func TestServeAfterStopReturnsImmediately(t *testing.T) {
+	server := NewServer()
+	if err := server.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Serve(listener); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClaimPendingAllowsOnlyOneCompletion(t *testing.T) {
+	server := NewServer()
+	server.pending["d-1"] = &pendingRequest{daemonRequestID: "d-1"}
+	var claimed atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if server.claimPending("d-1", nil) != nil {
+				claimed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := claimed.Load(); got != 1 {
+		t.Fatalf("pending request claimed %d times, want 1", got)
+	}
+}
+
+func TestClientDisconnectCancelsOwnedPendingRequests(t *testing.T) {
+	server := NewServer()
+	serverSide, peer := net.Pipe()
+	defer func() { _ = peer.Close() }()
+	client := &serverConnection{kind: "client", clientID: "client-1", conn: serverSide}
+	server.clientConns[client.clientID] = client
+	server.connections[client] = struct{}{}
+	server.pending["owned"] = &pendingRequest{clientConn: client, timeoutTimer: time.NewTimer(time.Hour)}
+	server.pending["other"] = &pendingRequest{clientConn: &serverConnection{id: "other"}}
+
+	server.handleDisconnect(client)
+
+	server.mu.Lock()
+	_, ownedExists := server.pending["owned"]
+	_, otherExists := server.pending["other"]
+	server.mu.Unlock()
+	if ownedExists || !otherExists {
+		t.Fatalf("pending after disconnect: owned=%v other=%v", ownedExists, otherExists)
+	}
+}
+
+func TestUnityReregisterAndProjectReadsAreRaceFree(t *testing.T) {
+	server := NewServer()
+	conn := &serverConnection{id: "unity-1"}
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(2)
+		go func(index int) {
+			defer wg.Done()
+			server.handleUnityRegister(conn, unityRegisterParams{
+				ProjectID: "project-1",
+				Tools:     []ToolDefinition{{Name: fmt.Sprintf("tool-%d", index)}},
+			})
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = server.buildProjectsResult(true)
+		}()
+	}
+	wg.Wait()
 }

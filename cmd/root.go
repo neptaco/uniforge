@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/neptaco/uniforge/pkg/ui"
 	"github.com/spf13/cobra"
@@ -21,8 +22,10 @@ var rootCmd = &cobra.Command{
 	Long: `UniForge is a command-line tool for Unity development.
 It provides functionality to manage Unity Editor installations,
 build Unity projects, and run Unity in batch mode.`,
-	SilenceUsage:  true,
-	SilenceErrors: true,
+	SilenceUsage:       true,
+	SilenceErrors:      true,
+	PersistentPreRunE:  prepareAutomaticUpdate,
+	PersistentPostRunE: displayAutomaticUpdate,
 }
 
 func Execute(version string) {
@@ -71,6 +74,7 @@ func initConfig() {
 	}
 
 	viper.SetEnvPrefix("UNIFORGE")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 
 	if err := viper.ReadInConfig(); err == nil {

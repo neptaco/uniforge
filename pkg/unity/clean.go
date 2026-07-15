@@ -17,7 +17,7 @@ type CleanOptions struct {
 	Targets     []CleanTarget
 	DryRun      bool
 
-	findUnityProcess unityProcessFinder
+	probeLockfile unityLockfileProbe
 }
 
 type CleanItemStatus string
@@ -89,20 +89,20 @@ func cleanUnityLockfile(absProjectPath string, options CleanOptions) (CleanItem,
 		return item, fmt.Errorf("failed to inspect %s: %w", lockfile, err)
 	}
 
-	findProcess := options.findUnityProcess
-	if findProcess == nil {
-		findProcess = NewEditor("").findUnityProcess
+	probeLockfile := options.probeLockfile
+	if probeLockfile == nil {
+		probeLockfile = probeUnityLockfile
 	}
-	pid, err := findProcess(absProjectPath)
+	held, err := probeLockfile(lockfile)
 	if err != nil {
 		item.Status = CleanItemSkipped
-		item.Message = "failed to verify Unity Editor process"
-		return item, fmt.Errorf("failed to verify Unity Editor process before removing %s: %w", lockfile, err)
+		item.Message = "failed to inspect Unity lock state"
+		return item, fmt.Errorf("failed to inspect Unity lock state before removing %s: %w", lockfile, err)
 	}
-	if pid != 0 {
+	if held {
 		item.Status = CleanItemSkipped
-		item.Message = fmt.Sprintf("Unity Editor is still running (pid %d)", pid)
-		return item, fmt.Errorf("refusing to remove %s because Unity Editor is still running for this project (pid %d)", lockfile, pid)
+		item.Message = "lockfile is held by a running Unity Editor"
+		return item, fmt.Errorf("refusing to remove %s because its OS lock is held", lockfile)
 	}
 
 	if options.DryRun {
