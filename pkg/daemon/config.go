@@ -68,6 +68,14 @@ func (c Config) lockPath() (string, error) {
 	return filepath.Join(dir, "daemon.lock"), nil
 }
 
+func (c Config) lifecycleLockPath() (string, error) {
+	dir, err := c.runtimeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "daemon.lifecycle.lock"), nil
+}
+
 func (c Config) logPath() (string, error) {
 	dir, err := c.stateDir()
 	if err != nil {

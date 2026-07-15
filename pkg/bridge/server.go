@@ -80,6 +80,7 @@ type pendingRequest struct {
 	daemonRequestID           string
 	clientRequestID           string
 	clientConn                *serverConnection
+	targetConn                *serverConnection
 	targetProjectID           string
 	tool                      string
 	args                      map[string]any
@@ -96,7 +97,9 @@ type Server struct {
 	mu            sync.Mutex
 	unityConns    map[string]*serverConnection
 	clientConns   map[string]*serverConnection
+	connections   map[*serverConnection]struct{}
 	pending       map[string]*pendingRequest
+	stopped       bool
 	nextConnID    uint64
 	nextRequestID uint64
 }
@@ -105,6 +108,7 @@ func NewServer() *Server {
 	return &Server{
 		unityConns:  map[string]*serverConnection{},
 		clientConns: map[string]*serverConnection{},
+		connections: map[*serverConnection]struct{}{},
 		pending:     map[string]*pendingRequest{},
 	}
 }
@@ -112,7 +116,14 @@ func NewServer() *Server {
 // Serve accepts connections on the given listener until the listener is closed.
 // Call [Stop] from another goroutine to shut down.
 func (s *Server) Serve(listener net.Listener) error {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		_ = listener.Close()
+		return nil
+	}
 	s.listener = listener
+	s.mu.Unlock()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -127,6 +138,14 @@ func (s *Server) Serve(listener net.Listener) error {
 			conn:   conn,
 			reader: bufio.NewReader(conn),
 		}
+		s.mu.Lock()
+		if s.stopped {
+			s.mu.Unlock()
+			_ = conn.Close()
+			return nil
+		}
+		s.connections[connection] = struct{}{}
+		s.mu.Unlock()
 
 		go s.handleConnection(connection)
 	}
@@ -134,7 +153,11 @@ func (s *Server) Serve(listener net.Listener) error {
 
 func (s *Server) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.stopped = true
 
 	for _, pending := range s.pending {
 		if pending.timeoutTimer != nil {
@@ -145,17 +168,19 @@ func (s *Server) Stop() error {
 		}
 	}
 
-	for _, conn := range s.unityConns {
+	listener := s.listener
+	connections := make([]*serverConnection, 0, len(s.connections))
+	for conn := range s.connections {
+		connections = append(connections, conn)
+	}
+	s.mu.Unlock()
+
+	if listener != nil {
+		_ = listener.Close()
+	}
+	for _, conn := range connections {
 		_ = conn.conn.Close()
 	}
-	for _, conn := range s.clientConns {
-		_ = conn.conn.Close()
-	}
-
-	if s.listener != nil {
-		return s.listener.Close()
-	}
-
 	return nil
 }
 
@@ -255,7 +280,7 @@ func (s *Server) handleNotification(conn *serverConnection, envelope rpcEnvelope
 	case "unity.busy":
 		var params unityBusyParams
 		if err := json.Unmarshal(envelope.Params, &params); err == nil {
-			s.handleUnityBusy(params)
+			s.handleUnityBusy(conn, params)
 		}
 	case "unity.pong":
 		return
@@ -270,30 +295,36 @@ func (s *Server) handleResponse(conn *serverConnection, envelope rpcEnvelope) {
 		return
 	}
 
-	s.mu.Lock()
-	pending, ok := s.pending[requestID]
-	s.mu.Unlock()
-	if !ok {
-		return
-	}
-
 	if envelope.Error != nil {
+		pending := s.claimPending(requestID, conn)
+		if pending == nil {
+			return
+		}
 		_ = pending.clientConn.send(newErrorResponse(pending.clientRequestID, envelope.Error.Code, envelope.Error.Message, nil))
-		s.clearPending(requestID)
 		return
 	}
 
 	var toolResult unityToolResultEnvelope
 	if err := json.Unmarshal(envelope.Result, &toolResult); err != nil {
+		pending := s.claimPending(requestID, conn)
+		if pending == nil {
+			return
+		}
 		_ = pending.clientConn.send(newErrorResponse(pending.clientRequestID, InvalidRequest, "invalid Unity tool response", nil))
-		s.clearPending(requestID)
 		return
 	}
 
 	if toolResult.Pending {
 		s.mu.Lock()
-		pending.awaitingUnityContinuation = true
+		pending := s.pending[requestID]
+		if pending != nil && pending.targetConn == conn {
+			pending.awaitingUnityContinuation = true
+		}
 		s.mu.Unlock()
+		return
+	}
+	pending := s.claimPending(requestID, conn)
+	if pending == nil {
 		return
 	}
 
@@ -306,23 +337,22 @@ func (s *Server) handleResponse(conn *serverConnection, envelope rpcEnvelope) {
 		}
 	}
 	_ = pending.clientConn.send(newSuccessResponse(pending.clientRequestID, forwarded))
-	s.clearPending(requestID)
 }
 
 func (s *Server) handleUnityRegister(conn *serverConnection, params unityRegisterParams) {
+	s.mu.Lock()
+	existing := s.unityConns[params.ProjectID]
 	conn.kind = "unity"
 	conn.projectID = params.ProjectID
 	conn.projectName = params.ProjectName
 	conn.gitRoot = params.GitRoot
-	conn.tools = params.Tools
+	conn.tools = append([]ToolDefinition(nil), params.Tools...)
 	conn.schemaHash = ComputeSchemaHash(params.Tools)
-
-	s.mu.Lock()
-	if existing := s.unityConns[params.ProjectID]; existing != nil && existing != conn {
-		_ = existing.conn.Close()
-	}
 	s.unityConns[params.ProjectID] = conn
 	s.mu.Unlock()
+	if existing != nil && existing != conn {
+		_ = existing.conn.Close()
+	}
 
 	s.resumePendingRequests(params.ProjectID, params.PendingRequestIDs)
 }
@@ -372,6 +402,11 @@ func (s *Server) handleClientToolCall(conn *serverConnection, clientRequestID st
 		_ = conn.send(newErrorResponse(clientRequestID, ServerOverloaded, "server overloaded", nil))
 		return
 	}
+	if s.unityConns[targetConn.projectID] != targetConn {
+		s.mu.Unlock()
+		_ = conn.send(newErrorResponse(clientRequestID, UnityNotConnected, "Unity project disconnected before tool execution", nil))
+		return
+	}
 
 	daemonRequestID := fmt.Sprintf("d-%d-%d", time.Now().UnixMilli(), atomic.AddUint64(&s.nextRequestID, 1))
 	requestTimeout := defaultRequestTimeout
@@ -382,22 +417,30 @@ func (s *Server) handleClientToolCall(conn *serverConnection, clientRequestID st
 		daemonRequestID: daemonRequestID,
 		clientRequestID: clientRequestID,
 		clientConn:      conn,
+		targetConn:      targetConn,
 		targetProjectID: targetConn.projectID,
 		tool:            params.Tool,
 		args:            params.Args,
 		timeout:         requestTimeout,
 	}
 	pending.timeoutTimer = time.AfterFunc(requestTimeout, func() {
-		_ = conn.send(newErrorResponse(clientRequestID, ToolTimeout, "tool execution timed out", nil))
-		s.clearPending(daemonRequestID)
+		claimed := s.claimPending(daemonRequestID, nil)
+		if claimed != nil {
+			_ = claimed.clientConn.send(newErrorResponse(claimed.clientRequestID, ToolTimeout, "tool execution timed out", nil))
+		}
 	})
 	s.pending[daemonRequestID] = pending
 	s.mu.Unlock()
 
-	_ = targetConn.send(newRequest(daemonRequestID, "daemon.executeTool", map[string]any{
+	if err := targetConn.send(newRequest(daemonRequestID, "daemon.executeTool", map[string]any{
 		"tool": params.Tool,
 		"args": params.Args,
-	}))
+	})); err != nil {
+		claimed := s.claimPending(daemonRequestID, targetConn)
+		if claimed != nil {
+			_ = conn.send(newErrorResponse(clientRequestID, UnityNotConnected, "failed to send tool request to Unity", nil))
+		}
+	}
 }
 
 func (s *Server) resolveToolTarget(tool string, projectID string) (*serverConnection, int, string) {
@@ -440,12 +483,12 @@ func (s *Server) resolveToolTarget(tool string, projectID string) (*serverConnec
 	}
 }
 
-func (s *Server) handleUnityBusy(params unityBusyParams) {
+func (s *Server) handleUnityBusy(conn *serverConnection, params unityBusyParams) {
 	requestID := fmt.Sprintf("%v", params.RequestID)
 
 	s.mu.Lock()
 	pending, ok := s.pending[requestID]
-	if !ok {
+	if !ok || pending.targetConn != conn {
 		s.mu.Unlock()
 		return
 	}
@@ -478,6 +521,7 @@ func (s *Server) handleUnityBusy(params unityBusyParams) {
 			s.mu.Unlock()
 			return
 		}
+		latest.targetConn = target
 		s.mu.Unlock()
 		_ = target.send(newRequest(requestID, "daemon.executeTool", map[string]any{
 			"tool": latest.tool,
@@ -497,8 +541,14 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 		resumed[id] = struct{}{}
 	}
 
+	type retryRequest struct {
+		conn *serverConnection
+		id   string
+		tool string
+		args map[string]any
+	}
+	var retries []retryRequest
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	conn := s.unityConns[projectID]
 	for _, pending := range s.pending {
@@ -506,7 +556,13 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 			continue
 		}
 
+		if conn == nil {
+			pending.awaitingReconnection = true
+			pending.targetConn = nil
+			continue
+		}
 		pending.awaitingReconnection = false
+		pending.targetConn = conn
 		if pending.awaitingUnityContinuation {
 			continue
 		}
@@ -515,20 +571,29 @@ func (s *Server) resumePendingRequests(projectID string, resumedIDs []string) {
 			continue
 		}
 
-		_ = conn.send(newRequest(pending.daemonRequestID, "daemon.executeTool", map[string]any{
-			"tool": pending.tool,
-			"args": pending.args,
+		retries = append(retries, retryRequest{conn: conn, id: pending.daemonRequestID, tool: pending.tool, args: pending.args})
+	}
+	s.mu.Unlock()
+
+	for _, retry := range retries {
+		_ = retry.conn.send(newRequest(retry.id, "daemon.executeTool", map[string]any{
+			"tool": retry.tool,
+			"args": retry.args,
 		}))
 	}
 }
 
 func (s *Server) clearPending(requestID string) {
+	_ = s.claimPending(requestID, nil)
+}
+
+func (s *Server) claimPending(requestID string, targetConn *serverConnection) *pendingRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	pending := s.pending[requestID]
-	if pending == nil {
-		return
+	if pending == nil || (targetConn != nil && pending.targetConn != targetConn) {
+		return nil
 	}
 	if pending.timeoutTimer != nil {
 		pending.timeoutTimer.Stop()
@@ -537,11 +602,12 @@ func (s *Server) clearPending(requestID string) {
 		pending.busyRetryTimer.Stop()
 	}
 	delete(s.pending, requestID)
+	return pending
 }
 
 func (s *Server) handleDisconnect(conn *serverConnection) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	delete(s.connections, conn)
 
 	if conn.kind == "unity" && conn.projectID != "" {
 		if current := s.unityConns[conn.projectID]; current == conn {
@@ -558,8 +624,20 @@ func (s *Server) handleDisconnect(conn *serverConnection) {
 		if current := s.clientConns[conn.clientID]; current == conn {
 			delete(s.clientConns, conn.clientID)
 		}
+		for requestID, pending := range s.pending {
+			if pending.clientConn == conn {
+				if pending.timeoutTimer != nil {
+					pending.timeoutTimer.Stop()
+				}
+				if pending.busyRetryTimer != nil {
+					pending.busyRetryTimer.Stop()
+				}
+				delete(s.pending, requestID)
+			}
+		}
 	}
 
+	s.mu.Unlock()
 	_ = conn.conn.Close()
 }
 

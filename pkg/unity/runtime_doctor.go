@@ -6,10 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
+
+var projectPathArgumentPattern = regexp.MustCompile(`(?i)(?:^|\s)-projectPath(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))`)
 
 const (
 	RuntimeIssueActiveEditor          = "active_editor"
@@ -68,7 +73,7 @@ func NewRuntimeDoctor() *RuntimeDoctor {
 }
 
 func (d *RuntimeDoctor) Check(projectPath string, fix bool) (*RuntimeDoctorResult, error) {
-	absPath, err := filepath.Abs(projectPath)
+	absPath, err := normalizeProjectPath(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("get absolute project path: %w", err)
 	}
@@ -83,11 +88,13 @@ func (d *RuntimeDoctor) Check(projectPath string, fix bool) (*RuntimeDoctorResul
 
 	processByPID := make(map[int]processInfo, len(processes))
 	hasAnyUnityEditor := false
+	hasUnityHub := false
 	hasOpaqueUnityEditor := false
 	var licensingClients []processInfo
 	for _, process := range processes {
 		processByPID[process.PID] = process
 		hasAnyUnityEditor = hasAnyUnityEditor || isUnityEditorCommandLine(process.Command)
+		hasUnityHub = hasUnityHub || isUnityHub(process)
 		hasOpaqueUnityEditor = hasOpaqueUnityEditor || (isUnityEditorProcessName(process.Name) && strings.TrimSpace(process.Command) == "")
 		if isUnityLicensingClient(process) {
 			licensingClients = append(licensingClients, process)
@@ -100,7 +107,7 @@ func (d *RuntimeDoctor) Check(projectPath string, fix bool) (*RuntimeDoctorResul
 	if err := d.checkILPPPid(result, absPath, processByPID, processesKnown, fix); err != nil {
 		return result, err
 	}
-	if err := d.checkLicensingClients(result, hasAnyUnityEditor, licensingClients, processesKnown && !hasOpaqueUnityEditor, fix); err != nil {
+	if err := d.checkLicensingClients(result, hasAnyUnityEditor || hasUnityHub, licensingClients, processesKnown && !hasOpaqueUnityEditor, fix); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -143,20 +150,22 @@ func (d *RuntimeDoctor) checkILPPPid(result *RuntimeDoctorResult, projectPath st
 		return fmt.Errorf("read ILPP pid file: %w", err)
 	}
 	pid, parseErr := strconv.Atoi(strings.TrimSpace(string(data)))
+	if parseErr != nil {
+		result.addIssue(RuntimeIssue{Kind: RuntimeIssueProcessScanFailed, Message: "ILPP pid file is invalid, so process state could not be verified", Path: pidFile, Blocking: true})
+		return nil
+	}
 	if !processesKnown {
 		result.addIssue(RuntimeIssue{Kind: RuntimeIssueProcessScanFailed, Message: "ILPP pid file exists, but process state could not be verified", Path: pidFile, PID: pid, Blocking: true})
 		return nil
 	}
-	if parseErr == nil {
-		if process, ok := processes[pid]; ok {
-			if isUnityILPPProcess(process) {
-				result.addIssue(RuntimeIssue{Kind: RuntimeIssueActiveILPP, Message: "Unity IL post processor is still running", Path: pidFile, PID: pid})
-				return nil
-			}
-			if strings.TrimSpace(process.Command) == "" {
-				result.addIssue(RuntimeIssue{Kind: RuntimeIssueProcessScanFailed, Message: "ILPP pid is active, but its command line could not be inspected", Path: pidFile, PID: pid, Blocking: true})
-				return nil
-			}
+	if process, ok := processes[pid]; ok {
+		if isUnityILPPProcess(process) {
+			result.addIssue(RuntimeIssue{Kind: RuntimeIssueActiveILPP, Message: "Unity IL post processor is still running", Path: pidFile, PID: pid})
+			return nil
+		}
+		if strings.TrimSpace(process.Command) == "" {
+			result.addIssue(RuntimeIssue{Kind: RuntimeIssueProcessScanFailed, Message: "ILPP pid is active, but its command line could not be inspected", Path: pidFile, PID: pid, Blocking: true})
+			return nil
 		}
 	}
 	index := result.addIssue(RuntimeIssue{Kind: RuntimeIssueStaleILPPPid, Message: "stale Unity IL post processor pid file exists", Path: pidFile, PID: pid, Blocking: true})
@@ -198,6 +207,19 @@ func (r *RuntimeDoctorResult) HasUnfixedBlockingIssues() bool {
 }
 
 func (r *RuntimeDoctorResult) HasIssues() bool { return len(r.Issues) > 0 }
+
+func (r *RuntimeDoctorResult) HasFixableIssues() bool {
+	for _, issue := range r.Issues {
+		if issue.Fixed {
+			continue
+		}
+		switch issue.Kind {
+		case RuntimeIssueStaleLockfile, RuntimeIssueStaleILPPPid, RuntimeIssueOrphanLicensingClient:
+			return true
+		}
+	}
+	return false
+}
 
 func (r *RuntimeDoctorResult) addIssue(issue RuntimeIssue) int {
 	r.Issues = append(r.Issues, issue)
@@ -261,12 +283,7 @@ func parsePSRuntimeProcesses(output string) []processInfo {
 
 func findUnityProcessInProcesses(processes []processInfo, projectPath string) int {
 	for _, process := range processes {
-		command := process.Command
-		if runtime.GOOS == "windows" {
-			if isUnityEditorCommandLine(command) && strings.Contains(normalizeWindowsPath(command), normalizeWindowsPath(projectPath)) {
-				return process.PID
-			}
-		} else if isUnityEditorCommandLine(command) && strings.Contains(command, projectPath) {
+		if isUnityEditorCommandLine(process.Command) && commandTargetsProject(process.Command, projectPath) {
 			return process.PID
 		}
 	}
@@ -274,8 +291,80 @@ func findUnityProcessInProcesses(processes []processInfo, projectPath string) in
 }
 
 func isUnityLicensingClient(process processInfo) bool {
-	value := strings.ToLower(process.Name + " " + process.Command)
-	return strings.Contains(value, "unity.licensing.client") || strings.Contains(value, "unitylicensingclient")
+	name := normalizedExecutableName(process)
+	return name == "unity.licensing.client" || name == "unity.licensing.client.exe" ||
+		name == "unitylicensingclient" || name == "unitylicensingclient.exe"
+}
+
+func isUnityHub(process processInfo) bool {
+	name := normalizedExecutableName(process)
+	return name == "unity hub" || name == "unity hub.exe" || name == "unityhub" || name == "unityhub.exe"
+}
+
+func normalizedExecutableName(process processInfo) string {
+	name := strings.Trim(strings.TrimSpace(process.Name), `"`)
+	if name == "" {
+		command := strings.TrimSpace(process.Command)
+		if strings.HasPrefix(command, `"`) {
+			if end := strings.Index(command[1:], `"`); end >= 0 {
+				command = command[1 : end+1]
+			}
+		} else if fields := strings.Fields(command); len(fields) > 0 {
+			command = fields[0]
+		}
+		name = filepath.Base(strings.ReplaceAll(command, `\`, "/"))
+	}
+	return strings.ToLower(name)
+}
+
+func commandTargetsProject(command, projectPath string) bool {
+	return commandTargetsProjectForOS(command, projectPath, runtime.GOOS)
+}
+
+func commandTargetsProjectForOS(command, projectPath, goos string) bool {
+	match := projectPathArgumentPattern.FindStringSubmatch(command)
+	if match == nil {
+		return false
+	}
+	candidate := ""
+	for _, value := range match[1:] {
+		if value != "" {
+			candidate = value
+			break
+		}
+	}
+	if goos == "windows" {
+		if runtime.GOOS == "windows" {
+			normalizedCandidate, candidateErr := normalizeProjectPath(candidate)
+			normalizedProject, projectErr := normalizeProjectPath(projectPath)
+			if candidateErr == nil && projectErr == nil {
+				candidate = normalizedCandidate
+				projectPath = normalizedProject
+			}
+		}
+		return normalizeWindowsPath(strings.TrimSpace(candidate)) == normalizeWindowsPath(strings.TrimSpace(projectPath))
+	}
+	normalizedCandidate, err := normalizeProjectPath(candidate)
+	if err != nil {
+		return false
+	}
+	normalizedProject, err := normalizeProjectPath(projectPath)
+	return err == nil && normalizedCandidate == normalizedProject
+}
+
+func normalizeProjectPath(path string) (string, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err == nil {
+		return filepath.Clean(resolved), nil
+	}
+	if os.IsNotExist(err) {
+		return filepath.Clean(absPath), nil
+	}
+	return "", err
 }
 
 func isUnityEditorProcessName(name string) bool {
@@ -292,6 +381,16 @@ func stopRuntimeProcess(pid int) error {
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return err
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := process.Signal(syscall.Signal(0)); err != nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	return process.Kill()
 }

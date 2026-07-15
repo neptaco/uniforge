@@ -89,10 +89,25 @@ func (d *Daemon) Lock() error {
 		return wrapErr("acquire lock (another daemon may be running)", err)
 	}
 
-	// Write PID into lock file for diagnostics
-	_ = f.Truncate(0)
-	_, _ = f.Seek(0, 0)
-	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+	// Publish a complete first line in one write. Readers use that line while the
+	// lock is held, so truncating only after the write avoids exposing an empty
+	// PID during startup.
+	pidLine := []byte(fmt.Sprintf("%d\n", os.Getpid()))
+	if _, err := f.WriteAt(pidLine, 0); err != nil {
+		unlockFile(f)
+		_ = f.Close()
+		return wrapErr("write lock PID", err)
+	}
+	if err := f.Truncate(int64(len(pidLine))); err != nil {
+		unlockFile(f)
+		_ = f.Close()
+		return wrapErr("truncate lock PID", err)
+	}
+	if err := f.Sync(); err != nil {
+		unlockFile(f)
+		_ = f.Close()
+		return wrapErr("sync lock PID", err)
+	}
 
 	d.lock = f
 	d.locked = true

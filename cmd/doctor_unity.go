@@ -36,13 +36,16 @@ func runDoctorUnity(cmd *cobra.Command, args []string) error {
 	ui.Info("Checking Unity runtime: %s", project.Path)
 	result, err := unity.NewRuntimeDoctor().Check(project.Path, doctorUnityFix)
 	if err != nil {
+		if result != nil {
+			printRuntimeDoctorResult(result)
+		}
 		return fmt.Errorf("unity runtime doctor failed: %w", err)
 	}
 	printRuntimeDoctorResult(result)
 
 	if result.HasUnfixedBlockingIssues() {
-		if !doctorUnityFix {
-			ui.Muted("Run `uniforge doctor unity %q --fix` to repair safe-to-fix stale state", project.Path)
+		if !doctorUnityFix && result.HasFixableIssues() {
+			ui.Muted("Run `uniforge doctor unity --fix` for this project to repair safe-to-fix stale state")
 		}
 		return fmt.Errorf("unity runtime has blocking issue(s)")
 	}
