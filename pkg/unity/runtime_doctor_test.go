@@ -81,21 +81,25 @@ func TestRuntimeDoctorDoesNotStopLicensingClientWhileAnyEditorRuns(t *testing.T)
 	}
 }
 
-func TestRuntimeDoctorDoesNotFixWhenProcessScanFails(t *testing.T) {
+func TestRuntimeDoctorFixesStaleLockfileWhenProcessScanFails(t *testing.T) {
 	project := makeRuntimeDoctorProject(t)
 	lockfile := filepath.Join(project, "Temp", "UnityLockfile")
 	pidFile := filepath.Join(project, "Library", "ilpp.pid")
 	writeRuntimeFile(t, lockfile, "")
 	writeRuntimeFile(t, pidFile, "88\n")
-	doctor := &RuntimeDoctor{listProcesses: func() ([]processInfo, error) { return nil, errors.New("scan failed") }, stopProcess: func(int) error { return nil }}
+	doctor := &RuntimeDoctor{
+		listProcesses: func() ([]processInfo, error) { return nil, errors.New("scan failed") },
+		stopProcess:   func(int) error { return nil },
+		probeLockfile: func(string) (bool, error) { return false, nil },
+	}
 	result, err := doctor.Check(project, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.HasUnfixedBlockingIssues() || len(result.Fixes) != 0 {
+	if !result.HasUnfixedBlockingIssues() || len(result.Fixes) != 1 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	assertRuntimeFileExists(t, lockfile)
+	assertRuntimeFileMissing(t, lockfile)
 	assertRuntimeFileExists(t, pidFile)
 }
 
@@ -140,7 +144,19 @@ func testRuntimeDoctor(processes []processInfo, stopper processStopper) *Runtime
 	if stopper == nil {
 		stopper = func(int) error { return nil }
 	}
-	return &RuntimeDoctor{listProcesses: func() ([]processInfo, error) { return processes, nil }, stopProcess: stopper}
+	return &RuntimeDoctor{
+		listProcesses: func() ([]processInfo, error) { return processes, nil },
+		stopProcess:   stopper,
+		probeLockfile: func(path string) (bool, error) {
+			projectPath := filepath.Dir(filepath.Dir(path))
+			for _, process := range processes {
+				if isUnityEditorProcessName(process.Name) && process.Command == "" {
+					return false, errors.New("lock state unavailable")
+				}
+			}
+			return findUnityProcessInProcesses(processes, projectPath) != 0, nil
+		},
+	}
 }
 
 func makeRuntimeDoctorProject(t *testing.T) string {
