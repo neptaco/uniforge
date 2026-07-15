@@ -3,9 +3,12 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func testConfig(t *testing.T) Config {
@@ -139,6 +142,103 @@ func TestIsRunningAndStop(t *testing.T) {
 	}
 }
 
+func TestStartDaemonOutlivesCallerContext(t *testing.T) {
+	if os.Getenv("UNIFORGE_DAEMON_START_HELPER") == "1" {
+		runDaemonStartHelper(t)
+		return
+	}
+
+	cfg := testConfig(t)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperDir, err := os.MkdirTemp("", "daemon-start-helper-")
+	if err != nil {
+		t.Fatalf("create helper directory: %v", err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := os.RemoveAll(helperDir)
+			if err == nil || time.Now().After(deadline) {
+				if err != nil {
+					t.Errorf("remove helper directory: %v", err)
+				}
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	helperExecutable := filepath.Join(helperDir, filepath.Base(executable))
+	shutdownFile := filepath.Join(helperDir, "shutdown")
+	executableData, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatalf("read test executable: %v", err)
+	}
+	if err := os.WriteFile(helperExecutable, executableData, 0o755); err != nil {
+		t.Fatalf("copy test executable: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := Start(ctx, cfg, StartOptions{
+		Executable:  helperExecutable,
+		Args:        []string{"-test.run=TestStartDaemonOutlivesCallerContext"},
+		Env:         []string{"UNIFORGE_DAEMON_START_HELPER=1", "UNIFORGE_DAEMON_RUNTIME_DIR=" + cfg.RuntimeDir, "UNIFORGE_DAEMON_STATE_DIR=" + cfg.StateDir, "UNIFORGE_DAEMON_SHUTDOWN_FILE=" + shutdownFile},
+		WaitTimeout: 5 * time.Second,
+	}); err != nil {
+		cancel()
+		t.Fatalf("start helper daemon: %v", err)
+	}
+	info, err := ReadInfo(cfg)
+	if err != nil {
+		cancel()
+		t.Fatalf("read helper daemon info: %v", err)
+	}
+	cancel()
+	time.Sleep(200 * time.Millisecond)
+	if !isProcessAlive(info.PID) {
+		t.Fatal("daemon was killed when the caller context was canceled")
+	}
+	if err := os.WriteFile(shutdownFile, nil, 0o600); err != nil {
+		_ = forceStop(info.PID)
+		t.Fatalf("request helper shutdown: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		_, err := ReadInfo(cfg)
+		if os.IsNotExist(err) {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = forceStop(info.PID)
+			t.Fatal("helper daemon did not shut down")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+func runDaemonStartHelper(t *testing.T) {
+	t.Helper()
+	cfg := Config{
+		Name:       "td",
+		RuntimeDir: os.Getenv("UNIFORGE_DAEMON_RUNTIME_DIR"),
+		StateDir:   os.Getenv("UNIFORGE_DAEMON_STATE_DIR"),
+	}
+	if err := writeInfo(cfg, Info{PID: os.Getpid()}); err != nil {
+		t.Fatalf("helper write info: %v", err)
+	}
+	shutdownFile := os.Getenv("UNIFORGE_DAEMON_SHUTDOWN_FILE")
+	for {
+		if _, err := os.Stat(shutdownFile); err == nil {
+			if err := removeInfo(cfg); err != nil {
+				t.Fatalf("helper remove info: %v", err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestStopRemovesStaleInfoWithoutSignalingPID(t *testing.T) {
 	cfg := testConfig(t)
 	if err := writeInfo(cfg, Info{PID: os.Getpid()}); err != nil {
@@ -166,6 +266,74 @@ func TestStopRejectsInfoPIDThatDoesNotMatchLockOwner(t *testing.T) {
 	}
 	if err := Stop(context.Background(), cfg); err == nil {
 		t.Fatal("Stop should reject a PID that does not own the daemon lock")
+	}
+}
+
+func TestStopTargetUsesLockPIDWhenInfoIsMissing(t *testing.T) {
+	cfg := testConfig(t)
+	d := New(cfg)
+	if err := d.Lock(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = d.Shutdown() }()
+
+	pid, running, err := stopTargetPID(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !running || pid != os.Getpid() {
+		t.Fatalf("stop target = pid %d, running %v; want pid %d, running true", pid, running, os.Getpid())
+	}
+}
+
+func TestLifecycleLockSerializesOperations(t *testing.T) {
+	cfg := testConfig(t)
+	first, err := acquireLifecycleLock(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLifecycleLock(first)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := acquireLifecycleLock(ctx, cfg); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second lifecycle lock error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestWriteInfoIsAtomicForConcurrentReaders(t *testing.T) {
+	cfg := testConfig(t)
+	if err := writeInfo(cfg, Info{PID: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 1)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				if _, err := ReadInfo(cfg); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	for i := 2; i < 202; i++ {
+		if err := writeInfo(cfg, Info{PID: i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		t.Fatalf("concurrent ReadInfo observed partial write: %v", err)
+	default:
 	}
 }
 

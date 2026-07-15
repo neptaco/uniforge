@@ -1,91 +1,42 @@
 # UniForge
 
-Command-line tool for Unity development automation. Build, test, and manage Unity projects with simple commands. Includes a local daemon for real-time Unity Editor integration via MCP.
+Command-line tools and local automation for Unity development. Build, test, and manage Unity projects with simple commands. Includes a local daemon for real-time integration with running Unity Editors.
 
 ## Features
 
-- 🤖 **CI/CD optimized** - GitHub Actions annotations, log grouping, noise filtering
 - 🖥️ **Cross-platform** - Same commands work on macOS, Windows, Linux
 - 🧪 **Test Runner** - Run EditMode/PlayMode tests with XML results
+- 🛠️ **Daemon + Tool system** - Local daemon connects to running Unity Editors for real-time tool execution
 - 📦 **Editor management** - Install Unity versions via Unity Hub CLI
 - 📁 **Project management** - Browse and open Unity Hub projects with TUI or CLI
 - 📋 **Meta file check** - Detect missing .meta files and duplicate GUIDs
+- 🤖 **CI-friendly** - GitHub Actions annotations, log grouping, noise filtering
 - 🔑 **License management** - Activate/return licenses for CI runners
-- 🔌 **MCP Server** - Model Context Protocol server for AI-assisted Unity development
-- 🛠️ **Daemon + Tool system** - Local daemon connects to running Unity Editors for real-time tool execution
 
-## Quick Start: GitHub Actions
+## Quick Start
 
-### Build Workflow (Self-hosted Runner)
+```bash
+# Install uniforge
+curl -fsSL https://github.com/neptaco/uniforge/releases/latest/download/install.sh | sh
 
-Build for multiple platforms using matrix strategy:
+# Install the Unity Editor version your project needs
+uniforge editor install -p .
 
-```yaml
-name: Build
-
-on:
-  push:
-    tags: ['v*']
-
-jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - runner: unity-windows
-            target: StandaloneWindows64
-            modules: windows-il2cpp
-          - runner: unity-mac
-            target: StandaloneOSX
-            modules: mac-il2cpp
-
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: neptaco/setup-uniforge@v1
-
-      - name: Install Unity
-        run: uniforge editor install --modules ${{ matrix.modules }}
-
-      - name: Build
-        run: uniforge batch run . --ci -- -executeMethod Build.Perform -buildTarget ${{ matrix.target }}
+# Compile and run EditMode tests (Unity Editor closed)
+uniforge batch compile .
+uniforge batch test . --platform editmode
 ```
 
-### CI Workflow (Self-hosted Runner)
+With the Unity Editor open, the daemon enables real-time tool execution:
 
-Run tests on every push:
-
-```yaml
-name: CI
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: unity
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: neptaco/setup-uniforge@v1
-
-      - name: Install Unity
-        run: uniforge editor install
-
-      - name: Check .meta files
-        run: uniforge meta check .
-
-      - name: Run Tests
-        run: uniforge batch test . --platform editmode --ci
+```bash
+uniforge daemon start
+uniforge tool call editor-state
 ```
+
+See [Usage](#usage) for the full command reference and [GitHub Actions](#github-actions) for CI setup.
 
 ## Installation
-
-### GitHub Actions
-
-```yaml
-- uses: neptaco/setup-uniforge@v1
-```
 
 ### macOS / Linux
 
@@ -112,6 +63,33 @@ uniforge update --version v0.9.0
 ```
 
 Package-manager and development builds are not modified by `uniforge update`.
+
+Released builds also check for new UniForge versions in the background. The
+check runs at most once every 24 hours and never delays the command being run.
+If an update is found, a later successful interactive command prints a short
+notice to stderr. The same release is not mentioned again for seven days.
+
+Automatic checks and notices are disabled in CI and for machine-readable or
+protocol output, including JSON, YAML, TSV, `tool`, `mcp serve`, and shell
+completion. This protection still applies when notifications are configured as
+`always`, because PTYs and some process runners combine stdout and stderr.
+
+Configure the behavior in `~/.uniforge.yaml`:
+
+```yaml
+update:
+  check: true
+  check_interval: 24h
+  notify: auto # auto, always, or never
+  remind_interval: 168h
+```
+
+The equivalent environment variables are
+`UNIFORGE_UPDATE_CHECK`, `UNIFORGE_UPDATE_CHECK_INTERVAL`,
+`UNIFORGE_UPDATE_NOTIFY`, and `UNIFORGE_UPDATE_REMIND_INTERVAL`. Set
+`UNIFORGE_NO_UPDATE_CHECK=1` to disable automatic network checks entirely.
+Checks only request public release metadata from GitHub; UniForge does not send
+an identifier or telemetry with the request.
 
 ### Manual download
 
@@ -152,7 +130,10 @@ uniforge editor install 2022.3.10f1 --modules ios,android
 uniforge editor list
 
 # List available versions (for scripting)
-uniforge editor available --lts --latest --format json
+uniforge editor available --lts --latest -o json
+
+# Clear cached Unity release information
+uniforge cache clear
 ```
 
 ### Batch Mode (Unity Editor closed)
@@ -193,6 +174,9 @@ uniforge daemon start
 # Check daemon status
 uniforge daemon status
 
+# Restart daemon
+uniforge daemon restart
+
 # List connected Unity projects
 uniforge tool projects
 
@@ -214,16 +198,6 @@ uniforge daemon stop
 
 Default output is YAML. Use `-o json` when machine-readable output is needed.
 
-### MCP Server
-
-Start a Model Context Protocol server for AI-assisted Unity development:
-
-```bash
-uniforge mcp serve
-```
-
-The MCP server exposes Unity tools over stdio, enabling AI agents to interact with Unity Editor.
-
 ### Check .meta File Integrity
 
 ```bash
@@ -244,13 +218,16 @@ uniforge meta check ./MyProject --fix --force
 uniforge project list
 
 # List in JSON format
-uniforge project list --format=json
+uniforge project list -o json
 
 # Open project by name (partial match)
 uniforge project open my-game
 
 # Get project path (for shell scripts)
 uniforge project path my-game
+
+# Show project details (Unity version, packages, asmdefs)
+uniforge project info my-game
 ```
 
 ### Open/Close Unity Editor
@@ -297,7 +274,15 @@ uniforge doctor unity ./MyProject
 uniforge doctor unity ./MyProject --fix
 ```
 
-The doctor never removes runtime files when the process state cannot be verified or a matching Unity process is active. Use `uniforge clean unity` when you explicitly want to remove a selected runtime file.
+The doctor never removes runtime files when the process state cannot be verified or a matching Unity process is active. Use `uniforge clean unity` when you explicitly want to remove a selected runtime file:
+
+```bash
+# Remove Temp/UnityLockfile after verifying the editor is not running
+uniforge clean unity ./MyProject --target lockfile
+
+# Preview what would be removed
+uniforge clean unity ./MyProject --target lockfile --dry-run
+```
 
 ### Manage Unity License
 
@@ -313,6 +298,77 @@ uniforge license return
 ```
 
 **Environment variables:** `UNITY_USERNAME`, `UNITY_PASSWORD`, `UNITY_SERIAL`
+
+## GitHub Actions
+
+Use [`neptaco/setup-uniforge`](https://github.com/neptaco/setup-uniforge) to install uniforge on self-hosted runners:
+
+```yaml
+- uses: neptaco/setup-uniforge@v1
+```
+
+### CI Workflow (Self-hosted Runner)
+
+Run tests on every push:
+
+```yaml
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: unity
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: neptaco/setup-uniforge@v1
+
+      - name: Install Unity
+        run: uniforge editor install
+
+      - name: Check .meta files
+        run: uniforge meta check .
+
+      - name: Run Tests
+        run: uniforge batch test . --platform editmode --ci
+```
+
+### Build Workflow (Self-hosted Runner)
+
+Build for multiple platforms using matrix strategy:
+
+```yaml
+name: Build
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: unity-windows
+            target: StandaloneWindows64
+            modules: windows-il2cpp
+          - runner: unity-mac
+            target: StandaloneOSX
+            modules: mac-il2cpp
+
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: neptaco/setup-uniforge@v1
+
+      - name: Install Unity
+        run: uniforge editor install --modules ${{ matrix.modules }}
+
+      - name: Build
+        run: uniforge batch run . --ci -- -executeMethod Build.Perform -buildTarget ${{ matrix.target }}
+```
 
 ## Configuration
 

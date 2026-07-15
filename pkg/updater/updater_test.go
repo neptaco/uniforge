@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestRunChecksAndInstallsRelease(t *testing.T) {
@@ -116,6 +118,124 @@ func TestAssetNames(t *testing.T) {
 		archive, binary, err := assetNames(tt.goos, tt.goarch)
 		if (err != nil) != tt.wantErr || archive != tt.archive || binary != tt.binary {
 			t.Fatalf("assetNames(%q, %q) = %q, %q, %v", tt.goos, tt.goarch, archive, binary, err)
+		}
+	}
+}
+
+func TestAutomaticUpdateCheckUsesCachedResultOnNextInvocation(t *testing.T) {
+	now := time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC)
+	cachePath := filepath.Join(t.TempDir(), "update-check.json")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3"}`))
+	}))
+	defer server.Close()
+
+	opts := AutoCheckOptions{
+		CurrentVersion: "1.0.0",
+		CachePath:      cachePath,
+		Now:            func() time.Time { return now },
+		APIBase:        server.URL,
+		HTTPClient:     server.Client(),
+	}
+	decision, err := PrepareAutoCheck(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decision.CheckDue || decision.Notice != nil {
+		t.Fatalf("first decision = %#v, want background check only", decision)
+	}
+	if err := RefreshAutoCheck(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+
+	now = now.Add(time.Minute)
+	decision, err = PrepareAutoCheck(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.CheckDue || decision.Notice == nil {
+		t.Fatalf("cached decision = %#v, want notice without check", decision)
+	}
+	if decision.Notice.LatestVersion != "v1.2.3" || decision.Notice.CurrentVersion != "v1.0.0" {
+		t.Fatalf("notice = %#v", decision.Notice)
+	}
+
+	if err := RecordAutoNotification(opts, decision.Notice.LatestVersion); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	decision, err = PrepareAutoCheck(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Notice != nil {
+		t.Fatalf("notice repeated before reminder interval: %#v", decision.Notice)
+	}
+
+	now = now.Add(8 * 24 * time.Hour)
+	decision, err = PrepareAutoCheck(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Notice == nil {
+		t.Fatal("expected reminder after seven days")
+	}
+}
+
+func TestAutomaticUpdateCheckClaimIsExclusive(t *testing.T) {
+	opts := AutoCheckOptions{
+		CurrentVersion: "v1.0.0",
+		CachePath:      filepath.Join(t.TempDir(), "update-check.json"),
+		Now:            func() time.Time { return time.Date(2026, 7, 15, 10, 0, 0, 0, time.UTC) },
+	}
+	const workers = 12
+	var wg sync.WaitGroup
+	results := make(chan bool, workers)
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			decision, err := PrepareAutoCheck(opts)
+			if err != nil {
+				t.Errorf("PrepareAutoCheck: %v", err)
+				return
+			}
+			results <- decision.CheckDue
+		}()
+	}
+	wg.Wait()
+	close(results)
+	claimed := 0
+	for checkDue := range results {
+		if checkDue {
+			claimed++
+		}
+	}
+	if claimed != 1 {
+		t.Fatalf("check claimed %d times, want 1", claimed)
+	}
+}
+
+func TestAutomaticUpdateVersionComparison(t *testing.T) {
+	tests := []struct {
+		candidate string
+		current   string
+		want      bool
+	}{
+		{"v1.2.3", "1.2.2", true},
+		{"v2.0.0", "v1.99.99", true},
+		{"v1.2.3", "v1.2.3", false},
+		{"v1.2.2", "v1.2.3", false},
+		{"latest", "v1.2.3", false},
+		{"v1.2.3", "dev", false},
+	}
+	for _, tt := range tests {
+		if got := isNewerVersion(tt.candidate, tt.current); got != tt.want {
+			t.Errorf("isNewerVersion(%q, %q) = %v, want %v", tt.candidate, tt.current, got, tt.want)
 		}
 	}
 }
