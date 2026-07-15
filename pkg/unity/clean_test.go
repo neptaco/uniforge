@@ -19,9 +19,9 @@ func TestCleanUnityProjectLockfileMissing(t *testing.T) {
 	result, err := CleanUnityProject(CleanOptions{
 		ProjectPath: projectPath,
 		Targets:     []CleanTarget{CleanTargetLockfile},
-		findUnityProcess: func(string) (int, error) {
-			t.Fatal("findUnityProcess should not be called when lockfile is missing")
-			return 0, nil
+		probeLockfile: func(string) (bool, error) {
+			t.Fatal("probeLockfile should not be called when lockfile is missing")
+			return false, nil
 		},
 	})
 	if err != nil {
@@ -42,11 +42,11 @@ func TestCleanUnityProjectLockfileDryRun(t *testing.T) {
 		ProjectPath: projectPath,
 		Targets:     []CleanTarget{CleanTargetLockfile},
 		DryRun:      true,
-		findUnityProcess: func(gotProjectPath string) (int, error) {
-			if gotProjectPath != projectPath {
-				t.Fatalf("projectPath = %q, want %q", gotProjectPath, projectPath)
+		probeLockfile: func(gotLockfile string) (bool, error) {
+			if gotLockfile != lockfile {
+				t.Fatalf("lockfile = %q, want %q", gotLockfile, lockfile)
 			}
-			return 0, nil
+			return false, nil
 		},
 	})
 	if err != nil {
@@ -66,8 +66,8 @@ func TestCleanUnityProjectLockfileRemove(t *testing.T) {
 	result, err := CleanUnityProject(CleanOptions{
 		ProjectPath: projectPath,
 		Targets:     []CleanTarget{CleanTargetLockfile},
-		findUnityProcess: func(string) (int, error) {
-			return 0, nil
+		probeLockfile: func(string) (bool, error) {
+			return false, nil
 		},
 	})
 	if err != nil {
@@ -87,8 +87,8 @@ func TestCleanUnityProjectLockfileSkipsWhenUnityRunning(t *testing.T) {
 	result, err := CleanUnityProject(CleanOptions{
 		ProjectPath: projectPath,
 		Targets:     []CleanTarget{CleanTargetLockfile},
-		findUnityProcess: func(string) (int, error) {
-			return 1234, nil
+		probeLockfile: func(string) (bool, error) {
+			return true, nil
 		},
 	})
 	if err == nil {

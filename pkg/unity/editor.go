@@ -202,14 +202,16 @@ func (e *Editor) Close(projectPath string, force bool) error {
 	return nil
 }
 
-// CheckNotRunning returns an error if Unity Editor is already running for the project.
-// A lockfile is used as a fast signal, but the matching process is authoritative because
-// Unity can leave Temp/UnityLockfile behind after an interrupted or failed batch run.
+type unityLockfileProbe func(path string) (held bool, err error)
+
+// CheckNotRunning returns an error if Unity Editor holds the project's lockfile.
+// The file itself can outlive an interrupted or failed Editor process, so its OS-level
+// lock state is authoritative rather than its mere existence or a process-list heuristic.
 func (e *Editor) CheckNotRunning(projectPath string) error {
-	return checkNotRunning(projectPath, e.findUnityProcess)
+	return checkNotRunning(projectPath, probeUnityLockfile)
 }
 
-func checkNotRunning(projectPath string, findProcess unityProcessFinder) error {
+func checkNotRunning(projectPath string, probeLockfile unityLockfileProbe) error {
 	absPath, err := filepath.Abs(projectPath)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
@@ -222,12 +224,12 @@ func checkNotRunning(projectPath string, findProcess unityProcessFinder) error {
 		return fmt.Errorf("failed to inspect Unity lockfile %s: %w", lockfile, err)
 	}
 
-	pid, err := findProcess(absPath)
+	held, err := probeLockfile(lockfile)
 	if err != nil {
-		return fmt.Errorf("unity lockfile exists at %s, but failed to verify the Unity Editor process: %w", lockfile, err)
+		return fmt.Errorf("failed to inspect Unity lock state for %s: %w", lockfile, err)
 	}
-	if pid != 0 {
-		return fmt.Errorf("unity Editor is already running for this project (PID: %d, lockfile: %s)", pid, lockfile)
+	if held {
+		return fmt.Errorf("unity Editor is already running for this project (lockfile is held: %s)", lockfile)
 	}
 
 	return nil

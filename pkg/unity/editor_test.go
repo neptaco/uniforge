@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-func TestCheckNotRunningSkipsProcessScanWithoutLockfile(t *testing.T) {
+func TestCheckNotRunningSkipsLockProbeWithoutLockfile(t *testing.T) {
 	projectPath := t.TempDir()
 
-	err := checkNotRunning(projectPath, func(string) (int, error) {
-		t.Fatal("process scan should not run without a lockfile")
-		return 0, nil
+	err := checkNotRunning(projectPath, func(string) (bool, error) {
+		t.Fatal("lock probe should not run without a lockfile")
+		return false, nil
 	})
 	if err != nil {
 		t.Fatalf("checkNotRunning failed: %v", err)
@@ -23,11 +23,11 @@ func TestCheckNotRunningSkipsProcessScanWithoutLockfile(t *testing.T) {
 func TestCheckNotRunningAllowsStaleLockfile(t *testing.T) {
 	projectPath, lockfile := createEditorLockfile(t)
 
-	err := checkNotRunning(projectPath, func(gotProjectPath string) (int, error) {
-		if gotProjectPath != projectPath {
-			t.Fatalf("project path = %q, want %q", gotProjectPath, projectPath)
+	err := checkNotRunning(projectPath, func(gotLockfile string) (bool, error) {
+		if gotLockfile != lockfile {
+			t.Fatalf("lockfile path = %q, want %q", gotLockfile, lockfile)
 		}
-		return 0, nil
+		return false, nil
 	})
 	if err != nil {
 		t.Fatalf("checkNotRunning failed: %v", err)
@@ -40,8 +40,8 @@ func TestCheckNotRunningAllowsStaleLockfile(t *testing.T) {
 func TestCheckNotRunningRejectsActiveEditor(t *testing.T) {
 	projectPath, _ := createEditorLockfile(t)
 
-	err := checkNotRunning(projectPath, func(string) (int, error) {
-		return 1234, nil
+	err := checkNotRunning(projectPath, func(string) (bool, error) {
+		return true, nil
 	})
 	if err == nil {
 		t.Fatal("expected active Unity Editor error")
@@ -51,11 +51,11 @@ func TestCheckNotRunningRejectsActiveEditor(t *testing.T) {
 func TestCheckNotRunningRejectsUnverifiedLockfile(t *testing.T) {
 	projectPath, _ := createEditorLockfile(t)
 
-	err := checkNotRunning(projectPath, func(string) (int, error) {
-		return 0, errors.New("ps failed")
+	err := checkNotRunning(projectPath, func(string) (bool, error) {
+		return false, errors.New("lock probe failed")
 	})
 	if err == nil {
-		t.Fatal("expected process verification error")
+		t.Fatal("expected lock inspection error")
 	}
 }
 
