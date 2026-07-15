@@ -8,6 +8,39 @@ import (
 
 const appName = "uniforge"
 
+// CacheDir returns the directory for persistent, disposable cache files.
+// - Linux:   $XDG_CACHE_HOME/uniforge (fallback: ~/.cache/uniforge)
+// - macOS:   ~/Library/Caches/uniforge
+// - Windows: %LOCALAPPDATA%\uniforge\cache
+func CacheDir() (string, error) {
+	switch runtime.GOOS {
+	case "linux":
+		if dir := os.Getenv("XDG_CACHE_HOME"); dir != "" {
+			return filepath.Join(dir, appName), nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, ".cache", appName), nil
+	case "darwin":
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, "Library", "Caches", appName), nil
+	default: // windows
+		if dir := os.Getenv("LOCALAPPDATA"); dir != "" {
+			return filepath.Join(dir, appName, "cache"), nil
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(home, "."+appName, "cache"), nil
+	}
+}
+
 // RuntimeDir returns the directory for transient runtime files (daemon.json, daemon.pid, daemon.sock).
 // - Linux:   $XDG_RUNTIME_DIR/uniforge  (fallback: /tmp/uniforge-$UID)
 // - macOS:   $TMPDIR/uniforge
