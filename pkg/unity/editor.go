@@ -203,16 +203,33 @@ func (e *Editor) Close(projectPath string, force bool) error {
 }
 
 // CheckNotRunning returns an error if Unity Editor is already running for the project.
-// Uses the Temp/UnityLockfile that Unity creates while the project is open.
+// A lockfile is used as a fast signal, but the matching process is authoritative because
+// Unity can leave Temp/UnityLockfile behind after an interrupted or failed batch run.
 func (e *Editor) CheckNotRunning(projectPath string) error {
+	return checkNotRunning(projectPath, e.findUnityProcess)
+}
+
+func checkNotRunning(projectPath string, findProcess unityProcessFinder) error {
 	absPath, err := filepath.Abs(projectPath)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
 	}
 	lockfile := filepath.Join(absPath, "Temp", "UnityLockfile")
-	if _, err := os.Stat(lockfile); err == nil {
-		return fmt.Errorf("unity Editor is already running for this project (lockfile exists: %s). If this is stale, run: uniforge clean unity %q --target lockfile", lockfile, absPath)
+	if _, err := os.Stat(lockfile); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to inspect Unity lockfile %s: %w", lockfile, err)
 	}
+
+	pid, err := findProcess(absPath)
+	if err != nil {
+		return fmt.Errorf("unity lockfile exists at %s, but failed to verify the Unity Editor process: %w", lockfile, err)
+	}
+	if pid != 0 {
+		return fmt.Errorf("unity Editor is already running for this project (PID: %d, lockfile: %s)", pid, lockfile)
+	}
+
 	return nil
 }
 
