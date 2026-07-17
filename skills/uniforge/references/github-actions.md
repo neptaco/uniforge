@@ -42,7 +42,7 @@ jobs:
         run: uniforge meta check .
 
       - name: Run Tests
-        run: uniforge batch test . --platform editmode --ci
+        run: uniforge test . --platform editmode --ci
 ```
 
 ## Build workflow: multi-platform matrix
@@ -76,12 +76,12 @@ jobs:
         run: uniforge editor install --modules ${{ matrix.modules }}
 
       - name: Build
-        run: uniforge batch run . --ci -- -executeMethod Build.Perform -buildTarget ${{ matrix.target }}
+        run: uniforge run . --ci -- -executeMethod Build.Perform -buildTarget ${{ matrix.target }}
 ```
 
 ## The `--ci` flag
 
-Always pass `--ci` to `batch test|compile|run` in CI. It enables:
+Always pass `--ci` to `test|compile|run` in CI. It enables:
 
 - GitHub Actions annotations (`::error::`/`::warning::`) so failures surface on the PR
 - Log grouping (collapsible sections in the run log)
@@ -110,8 +110,8 @@ Personal licenses activate without a serial; Plus/Pro require one. Store credent
 
 ## Tips for CI
 
-- **Raise timeouts for long jobs**: `batch test --timeout <seconds>` (default 600) and `batch run --timeout <seconds>` (default 3600). PlayMode suites and IL2CPP builds often need more.
-- **Recover from a crashed previous run**: `uniforge doctor unity . --fix` removes verified-stale lock/runtime files that would otherwise block batch mode on a persistent runner.
+- **Raise timeouts for long jobs**: `test --timeout <seconds>` (default 600) and `run --timeout <seconds>` (default 3600). PlayMode suites and IL2CPP builds often need more.
+- **Recover from a crashed previous run**: `uniforge doctor . --fix` removes verified-stale lock/runtime files that would otherwise block batch mode on a persistent runner.
 - **Fail fast on asset issues**: run `uniforge meta check .` before tests; add `--fix --force` only if you want CI to auto-repair (it modifies the working tree).
-- **Save artifacts**: `batch test --results ./test-results.xml` writes the test results XML; `--log-file <path>` captures the full Unity log for upload with `actions/upload-artifact`.
+- **Save artifacts**: `test --results ./test-results.xml` writes the test results XML; `--log-file <path>` captures the full Unity log for upload with `actions/upload-artifact`.
 - **Ephemeral runners**: return the license with `if: always()` so a failed build doesn't leak a seat.

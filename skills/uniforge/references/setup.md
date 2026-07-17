@@ -1,6 +1,6 @@
 # UniForge Setup Guide
 
-First-time setup: installing the CLI, the Unity-side plugin, and connecting an AI agent via MCP. Once set up, everyday usage is covered by the main skill reference.
+First-time setup: installing the CLI, the Unity-side plugin, and connecting an AI agent. Once set up, everyday usage is covered by the main skill reference.
 
 ## Installing the CLI
 
@@ -35,7 +35,7 @@ Notes:
 
 ## Installing the Unity Editor plugin (UPM package)
 
-The Unity-side package is needed **only for live-mode features** (`uniforge tool ...`, MCP tools that talk to the Editor). Batch mode, `meta check`, `logs`, and editor/version management work without it.
+The Unity-side package is needed **only for live-mode features** (`uniforge tool ...` commands that talk to the Editor). Batch mode, `meta check`, `logs`, and editor/version management work without it.
 
 Requirements: Unity 6.0 LTS or later (6000.0+).
 
@@ -63,8 +63,8 @@ uniforge tool projects
 3. **Pick your mode:**
    - **Editor closed (CI, scripted runs)** — use batch mode directly, nothing else to set up:
      ```bash
-     uniforge batch compile .
-     uniforge batch test . --platform editmode
+     uniforge compile .
+     uniforge test . --platform editmode
      ```
    - **Editor open (interactive / AI-assisted)** — install the UPM package (above), open the project (`uniforge open .`), then:
      ```bash
@@ -73,17 +73,14 @@ uniforge tool projects
      ```
      The daemon starts automatically on demand; `uniforge daemon start` is not needed.
 
-## Connecting an AI agent via MCP
+## Connecting an AI agent
 
 ```bash
-claude mcp add uniforge -- uniforge mcp serve
+uniforge tool list
+uniforge tool call <tool> [json-args] -o json
 ```
 
-or in a generic MCP client config:
-
-```json
-{"mcpServers": {"uniforge": {"command": "uniforge", "args": ["mcp", "serve"]}}}
-```
+An AI agent can run these commands directly; no server registration is required.
 
 ## Shell completion (optional)
 
