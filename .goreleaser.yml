@@ -48,6 +48,6 @@ changelog:
       - '^style:'
       - '^perf:'
     include:
-      - '^feat:'
-      - '^fix:'
+      - '^feat(\(.*\))?!?:'
+      - '^fix(\(.*\))?!?:'
       - '^BREAKING CHANGE:'
