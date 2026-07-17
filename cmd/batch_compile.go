@@ -3,9 +3,11 @@ package cmd
 import "github.com/spf13/cobra"
 
 var batchCompileCmd = &cobra.Command{
-	Use:   "compile [project]",
-	Short: "Compile a Unity project in batch mode",
-	RunE:  runCompile,
+	Use:        "compile [project]",
+	Short:      "Deprecated alias for compile",
+	RunE:       runCompile,
+	Deprecated: "use `uniforge compile [project]` instead",
+	Hidden:     true,
 }
 
 func init() {

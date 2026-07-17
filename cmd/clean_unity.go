@@ -9,14 +9,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	cleanUnityTargets []string
-	cleanUnityDryRun  bool
-)
-
 var cleanUnityCmd = &cobra.Command{
 	Use:   "unity [project]",
-	Short: "Clean stale Unity project runtime files",
+	Short: "Deprecated alias for clean",
 	Long: `Clean stale Unity project runtime files.
 
 The command only touches explicitly selected targets and verifies that the
@@ -26,31 +21,44 @@ Supported targets:
   lockfile  Temp/UnityLockfile
 
 Examples:
-  uniforge clean unity /path/to/project --target lockfile
-  uniforge clean unity --target lockfile --dry-run`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runCleanUnity,
+  uniforge clean /path/to/project --target lockfile
+  uniforge clean --target lockfile --dry-run`,
+	Args:       cobra.MaximumNArgs(1),
+	RunE:       runClean,
+	Deprecated: "use `uniforge clean [project] --target ...` instead",
+	Hidden:     true,
 }
 
 func init() {
 	cleanCmd.AddCommand(cleanUnityCmd)
-
-	cleanUnityCmd.Flags().StringArrayVar(&cleanUnityTargets, "target", nil, "Clean target to apply (repeatable): lockfile")
-	cleanUnityCmd.Flags().BoolVar(&cleanUnityDryRun, "dry-run", false, "Show what would be removed without deleting files")
+	addCleanFlags(cleanUnityCmd)
 }
 
-func runCleanUnity(cmd *cobra.Command, args []string) error {
+func addCleanFlags(cmd *cobra.Command) {
+	cmd.Flags().StringArray("target", nil, "Clean target to apply (repeatable): lockfile")
+	cmd.Flags().Bool("dry-run", false, "Show what would be removed without deleting files")
+}
+
+func runClean(cmd *cobra.Command, args []string) error {
 	project, err := resolveLoadedProjectArg(args)
 	if err != nil {
 		return err
 	}
 
-	targets, err := parseCleanUnityTargets(cleanUnityTargets)
+	targetValues, err := cmd.Flags().GetStringArray("target")
+	if err != nil {
+		return err
+	}
+	dryRun, err := cmd.Flags().GetBool("dry-run")
+	if err != nil {
+		return err
+	}
+	targets, err := parseCleanUnityTargets(targetValues)
 	if err != nil {
 		return err
 	}
 
-	if cleanUnityDryRun {
+	if dryRun {
 		ui.Info("Checking clean targets for project: %s", project.Path)
 	} else {
 		ui.Info("Cleaning project: %s", project.Path)
@@ -59,7 +67,7 @@ func runCleanUnity(cmd *cobra.Command, args []string) error {
 	result, err := unity.CleanUnityProject(unity.CleanOptions{
 		ProjectPath: project.Path,
 		Targets:     targets,
-		DryRun:      cleanUnityDryRun,
+		DryRun:      dryRun,
 	})
 
 	if result != nil {

@@ -20,7 +20,7 @@ var (
 
 var compileCmd = &cobra.Command{
 	Use:   "compile [project]",
-	Short: "Deprecated alias for batch compile",
+	Short: "Compile a Unity project in batch mode",
 	Long: `Compile Unity project scripts without running tests.
 
 Opens the project in batch mode to trigger script compilation,

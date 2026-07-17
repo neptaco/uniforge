@@ -21,7 +21,7 @@ var (
 
 var testCmd = &cobra.Command{
 	Use:   "test [project]",
-	Short: "Deprecated alias for batch test",
+	Short: "Run Unity Test Runner in batch mode",
 	Long: `Run Unity Test Runner with the specified configuration.
 
 Supports both EditMode and PlayMode tests.

@@ -3,9 +3,11 @@ package cmd
 import "github.com/spf13/cobra"
 
 var batchRunCmd = &cobra.Command{
-	Use:   "run [project] [-- unity-args...]",
-	Short: "Run Unity in batch mode with custom arguments",
-	RunE:  runRun,
+	Use:        "run [project] [-- unity-args...]",
+	Short:      "Deprecated alias for run",
+	RunE:       runRun,
+	Deprecated: "use `uniforge run [project]` instead",
+	Hidden:     true,
 }
 
 func init() {
