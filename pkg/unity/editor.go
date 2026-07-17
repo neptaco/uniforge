@@ -172,34 +172,42 @@ func (e *Editor) Close(projectPath string, force bool) error {
 		return fmt.Errorf("failed to find process %d: %w", pid, err)
 	}
 
+	// Snapshot the Editor's children (licensing client, asset import workers,
+	// ILPP) before signalling: once the Editor dies they are reparented and can
+	// no longer be attributed to it. A killed Editor cannot tear its children
+	// down, so leftovers are reaped afterwards — even when the exit wait fails,
+	// which is exactly when orphans are guaranteed. A graceful exit is left to
+	// clean up after itself: surviving children may be serving other Editors.
+	reaper := newProcessTreeReaper()
+	descendants := reaper.snapshotDescendants(pid)
+	reapAfterKill := func(waitErr error) error {
+		reaper.reap(descendants, treeReapNaturalGrace, treeReapTermGrace)
+		return waitErr
+	}
+
 	if force {
 		ui.Debug("Force killing Unity Editor process", "pid", pid)
 		if err := process.Kill(); err != nil {
 			return fmt.Errorf("failed to kill process: %w", err)
 		}
-		if err := waitForUnityProcessExit(absProjectPath, 10*time.Second, unityProcessExitPollInterval, e.findUnityProcess); err != nil {
-			return err
-		}
-	} else {
-		ui.Debug("Terminating Unity Editor process", "pid", pid)
-		if err := process.Signal(syscall.SIGTERM); err != nil {
-			return fmt.Errorf("failed to terminate process: %w", err)
-		}
-
-		if err := waitForUnityProcessExit(absProjectPath, 10*time.Second, unityProcessExitPollInterval, e.findUnityProcess); err == nil {
-			ui.Debug("Unity Editor terminated gracefully")
-		} else {
-			ui.Warn("Grace period expired, force killing...")
-			if err := process.Kill(); err != nil {
-				return fmt.Errorf("failed to kill process: %w", err)
-			}
-			if err := waitForUnityProcessExit(absProjectPath, 5*time.Second, unityProcessExitPollInterval, e.findUnityProcess); err != nil {
-				return err
-			}
-		}
+		return reapAfterKill(waitForUnityProcessExit(absProjectPath, 10*time.Second, unityProcessExitPollInterval, e.findUnityProcess))
 	}
 
-	return nil
+	ui.Debug("Terminating Unity Editor process", "pid", pid)
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("failed to terminate process: %w", err)
+	}
+
+	if err := waitForUnityProcessExit(absProjectPath, 10*time.Second, unityProcessExitPollInterval, e.findUnityProcess); err == nil {
+		ui.Debug("Unity Editor terminated gracefully")
+		return nil
+	}
+
+	ui.Warn("Grace period expired, force killing...")
+	if err := process.Kill(); err != nil {
+		return fmt.Errorf("failed to kill process: %w", err)
+	}
+	return reapAfterKill(waitForUnityProcessExit(absProjectPath, 5*time.Second, unityProcessExitPollInterval, e.findUnityProcess))
 }
 
 type unityLockfileProbe func(path string) (held bool, err error)
