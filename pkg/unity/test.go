@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -93,7 +92,7 @@ func (t *TestRunner) RunTests(config TestConfig) (*TestSummary, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, editorPath, args...)
+	cmd := newUnityBatchCommand(ctx, editorPath, args...)
 
 	log := logger.NewWithOptions(config.LogFile,
 		logger.WithCIMode(config.CIMode),

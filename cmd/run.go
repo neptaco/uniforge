@@ -18,7 +18,7 @@ var (
 
 var runCmd = &cobra.Command{
 	Use:   "run [project] [-- unity-args...]",
-	Short: "Deprecated alias for batch run",
+	Short: "Run Unity in batch mode with custom arguments",
 	Long: `Run Unity Editor in batch mode with custom arguments.
 All arguments after -- are passed directly to Unity.
 

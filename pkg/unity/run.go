@@ -3,7 +3,6 @@ package unity
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,7 +62,7 @@ func (r *Runner) Run(config RunConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, editorPath, args...)
+	cmd := newUnityBatchCommand(ctx, editorPath, args...)
 
 	log := logger.NewWithOptions(config.LogFile,
 		logger.WithCIMode(config.CIMode),

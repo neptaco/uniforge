@@ -3,7 +3,6 @@ package unity
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -123,7 +122,7 @@ func (c *Compiler) Compile(config CompileConfig) (*CompileResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, editorPath, args...)
+	cmd := newUnityBatchCommand(ctx, editorPath, args...)
 
 	diagnostics := &compileDiagnosticsCollector{}
 	log := logger.NewWithOptions(config.LogFile,

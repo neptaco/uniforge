@@ -1,6 +1,7 @@
 package unity
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -28,8 +29,13 @@ const (
 
 const listProcessesPowerShell = `$ErrorActionPreference = 'Stop'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$processes = @(Get-CimInstance Win32_Process | Select-Object ProcessId, Name, CommandLine)
+$processes = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name, CommandLine, @{Name='CreationDate';Expression={$_.CreationDate.ToString('yyyyMMddHHmmss.ffffff+000')}})
 ConvertTo-Json -InputObject $processes -Compress`
+
+// listProcessesTimeout bounds each ps / PowerShell invocation so a wedged
+// process scan cannot hang callers (notably exec.Cmd.Cancel, whose WaitDelay
+// only starts after Cancel returns).
+const listProcessesTimeout = 5 * time.Second
 
 type RuntimeDoctor struct {
 	listProcesses processLister
@@ -42,8 +48,12 @@ type processStopper func(pid int) error
 
 type processInfo struct {
 	PID     int
+	PPID    int
 	Name    string
 	Command string
+	// Created is the CIM creation timestamp on Windows (lexicographically
+	// comparable); empty on Unix. Used to reject parent-PID-reuse artifacts.
+	Created string
 }
 
 type RuntimeDoctorResult struct {
@@ -245,7 +255,9 @@ func listRuntimeProcesses() ([]processInfo, error) {
 	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
 		return nil, fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
-	output, err := exec.Command("ps", "-ax", "-o", "pid=,command=").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), listProcessesTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "ps", "-ax", "-o", "pid=,ppid=,command=").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -253,17 +265,29 @@ func listRuntimeProcesses() ([]processInfo, error) {
 }
 
 func listRuntimeProcessesWindows() ([]processInfo, error) {
-	output, err := exec.Command("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", listProcessesPowerShell).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), listProcessesTimeout)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", listProcessesPowerShell).Output()
 	if err != nil {
 		return nil, fmt.Errorf("list processes with PowerShell/CIM: %w", err)
 	}
+	processes, err := parseWindowsRuntimeProcesses(output)
+	if err != nil {
+		return nil, fmt.Errorf("parse PowerShell/CIM process output: %w", err)
+	}
+	return processes, nil
+}
+
+func parseWindowsRuntimeProcesses(output []byte) ([]processInfo, error) {
 	var rows []struct {
-		ProcessID   int     `json:"ProcessId"`
-		Name        string  `json:"Name"`
-		CommandLine *string `json:"CommandLine"`
+		ProcessID       int     `json:"ProcessId"`
+		ParentProcessID int     `json:"ParentProcessId"`
+		Name            string  `json:"Name"`
+		CommandLine     *string `json:"CommandLine"`
+		CreationDate    *string `json:"CreationDate"`
 	}
 	if err := json.Unmarshal(output, &rows); err != nil {
-		return nil, fmt.Errorf("parse PowerShell/CIM process output: %w", err)
+		return nil, err
 	}
 	processes := make([]processInfo, 0, len(rows))
 	for _, row := range rows {
@@ -271,7 +295,11 @@ func listRuntimeProcessesWindows() ([]processInfo, error) {
 		if row.CommandLine != nil {
 			command = *row.CommandLine
 		}
-		processes = append(processes, processInfo{PID: row.ProcessID, Name: row.Name, Command: command})
+		created := ""
+		if row.CreationDate != nil {
+			created = *row.CreationDate
+		}
+		processes = append(processes, processInfo{PID: row.ProcessID, PPID: row.ParentProcessID, Name: row.Name, Command: command, Created: created})
 	}
 	return processes, nil
 }
@@ -280,13 +308,18 @@ func parsePSRuntimeProcesses(output string) []processInfo {
 	var processes []processInfo
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
-		if len(fields) < 2 {
+		if len(fields) < 3 {
 			continue
 		}
 		pid, err := strconv.Atoi(fields[0])
-		if err == nil {
-			processes = append(processes, processInfo{PID: pid, Name: filepath.Base(fields[1]), Command: strings.Join(fields[1:], " ")})
+		if err != nil {
+			continue
 		}
+		ppid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		processes = append(processes, processInfo{PID: pid, PPID: ppid, Name: filepath.Base(fields[2]), Command: strings.Join(fields[2:], " ")})
 	}
 	return processes
 }
