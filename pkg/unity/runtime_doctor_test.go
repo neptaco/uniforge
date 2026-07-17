@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -226,9 +227,43 @@ func TestRuntimeDoctorDoesNotFixILPPPidWhenCommandLineIsUnavailable(t *testing.T
 }
 
 func TestParsePSRuntimeProcesses(t *testing.T) {
-	got := parsePSRuntimeProcesses("  123 /Applications/Unity/Unity -projectPath /tmp/project\ninvalid\n")
-	if len(got) != 1 || got[0].PID != 123 || got[0].Name != "Unity" {
+	got := parsePSRuntimeProcesses("  123     1 /Applications/Unity/Unity -projectPath /tmp/project\ninvalid\n  77 notnum /bin/x\n  88\n")
+	if len(got) != 1 || got[0].PID != 123 || got[0].PPID != 1 || got[0].Name != "Unity" {
 		t.Fatalf("unexpected processes: %+v", got)
+	}
+	if got[0].Command != "/Applications/Unity/Unity -projectPath /tmp/project" {
+		t.Fatalf("unexpected command: %q", got[0].Command)
+	}
+}
+
+func TestParseWindowsRuntimeProcesses(t *testing.T) {
+	output := []byte(`[
+  {"ProcessId":123,"ParentProcessId":100,"Name":"Unity.exe","CommandLine":"Unity.exe -projectPath C:\\Projects\\X","CreationDate":"20260717120000.000000+540"},
+  {"ProcessId":200,"Name":"Unity.Licensing.Client.exe","CommandLine":null}
+]`)
+	got, err := parseWindowsRuntimeProcesses(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("unexpected processes: %+v", got)
+	}
+	if got[0].PID != 123 || got[0].PPID != 100 || got[0].Name != "Unity.exe" || got[0].Command == "" {
+		t.Fatalf("unexpected first process: %+v", got[0])
+	}
+	if got[0].Created != "20260717120000.000000+540" {
+		t.Fatalf("unexpected creation date: %+v", got[0])
+	}
+	if got[1].PID != 200 || got[1].PPID != 0 || got[1].Command != "" || got[1].Created != "" {
+		t.Fatalf("unexpected second process: %+v", got[1])
+	}
+}
+
+func TestListProcessesPowerShellSelectsParentProcessId(t *testing.T) {
+	for _, field := range []string{"ParentProcessId", "CreationDate"} {
+		if !strings.Contains(listProcessesPowerShell, field) {
+			t.Fatalf("PowerShell query must select %s for descendant collection", field)
+		}
 	}
 }
 
