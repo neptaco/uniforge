@@ -6,9 +6,11 @@ import (
 )
 
 var batchTestCmd = &cobra.Command{
-	Use:   "test [project]",
-	Short: "Run Unity Test Runner in batch mode",
-	RunE:  runTest,
+	Use:        "test [project]",
+	Short:      "Deprecated alias for test",
+	RunE:       runTest,
+	Deprecated: "use `uniforge test [project]` instead",
+	Hidden:     true,
 }
 
 func init() {

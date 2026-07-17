@@ -11,7 +11,8 @@ var projectPathCmd = &cobra.Command{
 	Short: "Print project path",
 	Long: `Print the filesystem path of a project.
 
-The project can be specified by name (partial match) or index (1-based).
+The project defaults to the current directory and may be specified by path,
+Unity Hub project name (partial match), or Unity Hub project index (1-based).
 
 Examples:
   # Get path by project name
@@ -20,7 +21,7 @@ Examples:
   # Get path by index
   uniforge project path 1
 
-  # Interactive selection
+  # Get the current project path
   uniforge project path
 
   # Use in shell commands
@@ -35,9 +36,9 @@ func init() {
 }
 
 func runProjectPath(cmd *cobra.Command, args []string) error {
-	project, err := resolveHubProjectArg(args)
+	project, err := resolveLoadedProjectArg(args)
 	if err != nil {
-		return fmt.Errorf("failed to find project: %w", err)
+		return fmt.Errorf("failed to resolve project: %w", err)
 	}
 
 	fmt.Println(project.Path)

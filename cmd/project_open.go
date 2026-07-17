@@ -10,7 +10,7 @@ import (
 
 var projectOpenCmd = &cobra.Command{
 	Use:   "open [project]",
-	Short: "Open project in Unity Editor",
+	Short: "Deprecated alias for open",
 	Long: `Open a Unity Hub project in Unity Editor.
 
 The project can be specified by name (partial match) or index (1-based).
@@ -28,8 +28,10 @@ Examples:
 
   # Interactive selection
   uniforge project open`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runProjectOpen,
+	Args:       cobra.MaximumNArgs(1),
+	RunE:       runProjectOpen,
+	Deprecated: "use `uniforge open [project]` instead",
+	Hidden:     true,
 }
 
 func init() {

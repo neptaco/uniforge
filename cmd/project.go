@@ -24,9 +24,6 @@ Examples:
   # List all projects
   uniforge project list
 
-  # Open a project in Unity
-  uniforge project open my-project
-
   # Get project path (for shell scripts)
   uniforge project path my-project`,
 	RunE: runProjectTUI,

@@ -9,10 +9,7 @@ var cacheCmd = &cobra.Command{
 	Short: "Manage UniForge cache",
 	Long:  `Commands to manage the UniForge cache for Unity releases.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if cacheClearCmd.RunE == nil {
-			return cmd.Help()
-		}
-		return cacheClearCmd.RunE(cmd, args)
+		return cmd.Help()
 	},
 }
 

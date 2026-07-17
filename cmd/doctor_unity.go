@@ -8,33 +8,41 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var doctorUnityFix bool
-
 var doctorUnityCmd = &cobra.Command{
 	Use:   "unity [project]",
-	Short: "Diagnose Unity runtime files and helper processes",
+	Short: "Deprecated alias for doctor",
 	Long: `Diagnose transient Unity state that can block Editor startup or batch mode.
 
 By default this command is read-only. With --fix it removes stale project
 runtime files and stops orphan licensing clients only when no Unity Editor is
-running. Use clean unity when you explicitly want to remove a selected file.`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runDoctorUnity,
+running. Use clean when you explicitly want to remove a selected file.`,
+	Args:       cobra.MaximumNArgs(1),
+	RunE:       runDoctor,
+	Deprecated: "use `uniforge doctor [project]` instead",
+	Hidden:     true,
 }
 
 func init() {
 	doctorCmd.AddCommand(doctorUnityCmd)
-	doctorUnityCmd.Flags().BoolVar(&doctorUnityFix, "fix", false, "repair stale Unity runtime state")
+	addDoctorFlags(doctorUnityCmd)
 }
 
-func runDoctorUnity(cmd *cobra.Command, args []string) error {
+func addDoctorFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("fix", false, "repair verified stale Unity runtime state")
+}
+
+func runDoctor(cmd *cobra.Command, args []string) error {
 	project, err := resolveLoadedProjectArg(args)
+	if err != nil {
+		return err
+	}
+	fix, err := cmd.Flags().GetBool("fix")
 	if err != nil {
 		return err
 	}
 
 	ui.Info("Checking Unity runtime: %s", project.Path)
-	result, err := unity.NewRuntimeDoctor().Check(project.Path, doctorUnityFix)
+	result, err := unity.NewRuntimeDoctor().Check(project.Path, fix)
 	if err != nil {
 		if result != nil {
 			printRuntimeDoctorResult(result)
@@ -44,8 +52,8 @@ func runDoctorUnity(cmd *cobra.Command, args []string) error {
 	printRuntimeDoctorResult(result)
 
 	if result.HasUnfixedBlockingIssues() {
-		if !doctorUnityFix && result.HasFixableIssues() {
-			ui.Muted("Run `uniforge doctor unity --fix` for this project to repair safe-to-fix stale state")
+		if !fix && result.HasFixableIssues() {
+			ui.Muted("Run `uniforge doctor --fix` for this project to repair safe-to-fix stale state")
 		}
 		return fmt.Errorf("unity runtime has blocking issue(s)")
 	}

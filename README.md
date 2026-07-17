@@ -23,8 +23,8 @@ curl -fsSL https://github.com/neptaco/uniforge/releases/latest/download/install.
 uniforge editor install -p .
 
 # Compile and run EditMode tests (Unity Editor closed)
-uniforge batch compile .
-uniforge batch test . --platform editmode
+uniforge compile .
+uniforge test . --platform editmode
 ```
 
 With the Unity Editor open, the daemon enables real-time tool execution:
@@ -136,25 +136,25 @@ uniforge editor available --lts --latest -o json
 uniforge cache clear
 ```
 
-### Batch Mode (Unity Editor closed)
+### Compile, Test, and Run in Batch Mode (Unity Editor closed)
 
 ```bash
 # Compile project
-uniforge batch compile ./MyProject
+uniforge compile ./MyProject
 
 # Run EditMode tests
-uniforge batch test ./MyProject --platform editmode
+uniforge test ./MyProject --platform editmode
 
 # Run PlayMode tests with filter and results
-uniforge batch test ./MyProject --platform playmode \
+uniforge test ./MyProject --platform playmode \
   --filter MyTestClass \
   --results ./test-results.xml
 
 # Run custom method
-uniforge batch run ./MyProject -- -executeMethod Build.Execute
+uniforge run ./MyProject -- -executeMethod Build.Execute
 
 # CI mode (optimized output)
-uniforge batch run ./MyProject --ci -- -executeMethod Build.Execute
+uniforge run ./MyProject --ci -- -executeMethod Build.Execute
 ```
 
 **Options:**
@@ -220,9 +220,6 @@ uniforge project list
 # List in JSON format
 uniforge project list -o json
 
-# Open project by name (partial match)
-uniforge project open my-game
-
 # Get project path (for shell scripts)
 uniforge project path my-game
 
@@ -268,20 +265,20 @@ uniforge logs --editor
 
 ```bash
 # Read-only diagnosis
-uniforge doctor unity ./MyProject
+uniforge doctor ./MyProject
 
 # Remove only verified stale files and stop orphan licensing clients
-uniforge doctor unity ./MyProject --fix
+uniforge doctor ./MyProject --fix
 ```
 
-The doctor never removes runtime files when the process state cannot be verified or a matching Unity process is active. Use `uniforge clean unity` when you explicitly want to remove a selected runtime file:
+The doctor never removes runtime files when the process state cannot be verified or a matching Unity process is active. Use `uniforge clean ./MyProject --target lockfile` when you explicitly want to remove a selected runtime file:
 
 ```bash
 # Remove Temp/UnityLockfile after verifying the editor is not running
-uniforge clean unity ./MyProject --target lockfile
+uniforge clean ./MyProject --target lockfile
 
 # Preview what would be removed
-uniforge clean unity ./MyProject --target lockfile --dry-run
+uniforge clean ./MyProject --target lockfile --dry-run
 ```
 
 ### Manage Unity License
@@ -331,7 +328,7 @@ jobs:
         run: uniforge meta check .
 
       - name: Run Tests
-        run: uniforge batch test . --platform editmode --ci
+        run: uniforge test . --platform editmode --ci
 ```
 
 ### Build Workflow (Self-hosted Runner)
@@ -367,7 +364,7 @@ jobs:
         run: uniforge editor install --modules ${{ matrix.modules }}
 
       - name: Build
-        run: uniforge batch run . --ci -- -executeMethod Build.Perform -buildTarget ${{ matrix.target }}
+        run: uniforge run . --ci -- -executeMethod Build.Perform -buildTarget ${{ matrix.target }}
 ```
 
 ## Configuration
@@ -410,7 +407,7 @@ task check    # Run all checks (fmt, vet, lint, test)
 ### Notes
 
 - Use `./dist/uniforge` for testing, not `go run .` — `task build` embeds version info via ldflags, and the daemon requires a real binary path.
-- `batch run|compile|test` is the canonical form. Root-level `run|compile|test` are deprecated aliases.
+- Root-level `run|compile|test` are the canonical forms. The previous `batch run|compile|test` forms remain as deprecated compatibility aliases.
 
 ## License
 
