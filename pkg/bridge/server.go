@@ -22,6 +22,7 @@ type unityRegisterParams struct {
 	ProjectID         string           `json:"projectId"`
 	ProjectName       string           `json:"projectName"`
 	GitRoot           string           `json:"gitRoot,omitempty"`
+	ConsoleLogPath    string           `json:"consoleLogPath,omitempty"`
 	Tools             []ToolDefinition `json:"tools"`
 	PendingRequestIDs []string         `json:"pendingRequestIds,omitempty"`
 }
@@ -63,17 +64,18 @@ type unityToolResultEnvelope struct {
 }
 
 type serverConnection struct {
-	id          string
-	conn        net.Conn
-	reader      *bufio.Reader
-	sendMu      sync.Mutex
-	kind        string
-	clientID    string
-	projectID   string
-	projectName string
-	gitRoot     string
-	tools       []ToolDefinition
-	schemaHash  string
+	id             string
+	conn           net.Conn
+	reader         *bufio.Reader
+	sendMu         sync.Mutex
+	kind           string
+	clientID       string
+	projectID      string
+	projectName    string
+	gitRoot        string
+	consoleLogPath string
+	tools          []ToolDefinition
+	schemaHash     string
 }
 
 type pendingRequest struct {
@@ -346,6 +348,7 @@ func (s *Server) handleUnityRegister(conn *serverConnection, params unityRegiste
 	conn.projectID = params.ProjectID
 	conn.projectName = params.ProjectName
 	conn.gitRoot = params.GitRoot
+	conn.consoleLogPath = params.ConsoleLogPath
 	conn.tools = append([]ToolDefinition(nil), params.Tools...)
 	conn.schemaHash = ComputeSchemaHash(params.Tools)
 	s.unityConns[params.ProjectID] = conn
@@ -375,11 +378,12 @@ func (s *Server) buildProjectsResult(includeTools bool) ClientListProjectsResult
 	}
 	for _, unityConn := range s.unityConns {
 		project := ProjectInfo{
-			ID:         unityConn.projectID,
-			Name:       unityConn.projectName,
-			GitRoot:    unityConn.gitRoot,
-			Connected:  true,
-			SchemaHash: unityConn.schemaHash,
+			ID:             unityConn.projectID,
+			Name:           unityConn.projectName,
+			GitRoot:        unityConn.gitRoot,
+			ConsoleLogPath: unityConn.consoleLogPath,
+			Connected:      true,
+			SchemaHash:     unityConn.schemaHash,
 		}
 		if includeTools {
 			project.Tools = append([]ToolDefinition(nil), unityConn.tools...)

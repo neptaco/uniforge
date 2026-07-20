@@ -7,11 +7,13 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/neptaco/uniforge/pkg/bridge"
 	"github.com/neptaco/uniforge/pkg/logger"
 	"github.com/neptaco/uniforge/pkg/ui"
 	"github.com/neptaco/uniforge/pkg/unity"
@@ -31,7 +33,7 @@ var (
 )
 
 var logCmd = &cobra.Command{
-	Use:   "logs",
+	Use:   "logs [project]",
 	Short: "Display Unity Editor log",
 	Long: `Display the Unity Editor log file with syntax highlighting.
 
@@ -48,6 +50,9 @@ Log lines are colorized:
 Examples:
   # Show last 100 lines (default)
   uniforge logs
+
+  # Show logs for a connected project
+  uniforge logs /path/to/project
 
   # Show last 500 lines
   uniforge logs -n 500
@@ -72,6 +77,7 @@ Examples:
 
   # Open in text editor
   uniforge logs --editor`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runLog,
 }
 
@@ -89,9 +95,29 @@ func init() {
 }
 
 func runLog(cmd *cobra.Command, args []string) error {
-	logPath, err := unity.GetEditorLogPath()
+	projects := connectedProjectsForLogs()
+	cwd, _ := os.Getwd()
+	projectArg := ""
+	if len(args) > 0 {
+		projectArg = args[0]
+	}
+
+	fallback, fallbackErr := unity.GetEditorLogPath()
+	logPath, note, err := resolveEditorLogTarget(
+		projects,
+		projectArg,
+		cwd,
+		fallback,
+		findExistingManagedEditorLog,
+	)
 	if err != nil {
-		return fmt.Errorf("failed to get log path: %w", err)
+		return err
+	}
+	if logPath == "" {
+		return fmt.Errorf("failed to get log path: %w", fallbackErr)
+	}
+	if note != "" && !logRaw {
+		ui.Note("%s", note)
 	}
 
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
@@ -109,6 +135,69 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 
 	return showLog(logPath, logLines)
+}
+
+func connectedProjectsForLogs() []bridge.ProjectInfo {
+	client := newToolClient(toolClientOptions{autoStartDaemon: false, timeoutMS: 2000})
+	if err := client.Connect(); err != nil {
+		return nil
+	}
+	defer func() { _ = client.Close() }()
+
+	if _, err := client.Register(); err != nil {
+		return nil
+	}
+	result, err := client.ListProjects(false)
+	if err != nil {
+		return nil
+	}
+	return result.Projects
+}
+
+type managedEditorLogLookup func(projectPath string) (path string, exists bool)
+
+func resolveEditorLogTarget(
+	projects []bridge.ProjectInfo,
+	projectArg, cwd, fallback string,
+	managedLog managedEditorLogLookup,
+) (path string, note string, err error) {
+	selected, offlineProjectPath, err := bridge.ResolveProjectOrPath(projectArg, cwd, projects)
+	if err != nil {
+		return "", "", err
+	}
+
+	if selected != nil && selected.ConsoleLogPath != "" {
+		return selected.ConsoleLogPath, fmt.Sprintf(
+			"Reading log for connected project %s: %s",
+			selected.Name,
+			selected.ConsoleLogPath,
+		), nil
+	}
+
+	if selected == nil && offlineProjectPath != "" && managedLog != nil {
+		if managedPath, exists := managedLog(offlineProjectPath); exists {
+			projectName := filepath.Base(filepath.Clean(offlineProjectPath))
+			return managedPath, fmt.Sprintf(
+				"Reading managed log for project %s: %s",
+				projectName,
+				managedPath,
+			), nil
+		}
+	}
+
+	if fallback == "" {
+		return "", "", nil
+	}
+	return fallback, fmt.Sprintf("Reading global Unity Editor log: %s", fallback), nil
+}
+
+func findExistingManagedEditorLog(projectPath string) (string, bool) {
+	managedPath, err := unity.GetManagedEditorLogPath(projectPath)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(managedPath)
+	return managedPath, err == nil && !info.IsDir()
 }
 
 func openInEditor(logPath string) error {

@@ -1,11 +1,18 @@
 package unity
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/neptaco/uniforge/pkg/platform"
 )
 
 func TestCheckNotRunningSkipsLockProbeWithoutLockfile(t *testing.T) {
@@ -166,5 +173,73 @@ func TestResolveEditorExecutablePathBuildsLinuxExecutableFromVersionDir(t *testi
 	expected := "/opt/Unity/Hub/Editor/2022.3.60f1/Editor/Unity"
 	if resolved != expected {
 		t.Fatalf("resolved = %q, want %q", resolved, expected)
+	}
+}
+
+func TestBuildEditorLaunchArgsIncludesLogFile(t *testing.T) {
+	got := buildEditorLaunchArgs("/projects/My Game", "/state/editor-logs/My_Game.log")
+	want := []string{
+		"-projectPath", "/projects/My Game",
+		"-logFile", "/state/editor-logs/My_Game.log",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildEditorLaunchArgsOmitsLogFile(t *testing.T) {
+	got := buildEditorLaunchArgs("/projects/My Game", "")
+	want := []string{"-projectPath", "/projects/My Game"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildEditorLogPathSanitizesProjectName(t *testing.T) {
+	stateDir := t.TempDir()
+	projectPath := filepath.Join(t.TempDir(), "My Game: Demo")
+	got := buildEditorLogPath(stateDir, projectPath)
+	want := filepath.Join(stateDir, "editor-logs", "My_Game_Demo-"+expectedProjectPathHash(projectPath)+".log")
+	if got != want {
+		t.Fatalf("log path = %q, want %q", got, want)
+	}
+}
+
+func TestBuildEditorLogPathDistinguishesProjectsWithSameName(t *testing.T) {
+	stateDir := t.TempDir()
+	first := buildEditorLogPath(stateDir, filepath.Join(t.TempDir(), "Game"))
+	second := buildEditorLogPath(stateDir, filepath.Join(t.TempDir(), "Game"))
+
+	if first == second {
+		t.Fatalf("same-name projects resolved to the same log path: %s", first)
+	}
+}
+
+func expectedProjectPathHash(projectPath string) string {
+	hashInput := filepath.Clean(projectPath)
+	if runtime.GOOS == "windows" {
+		hashInput = strings.ToLower(hashInput)
+	}
+	sum := sha256.Sum256([]byte(hashInput))
+	return fmt.Sprintf("%x", sum[:4])
+}
+
+func TestGetManagedEditorLogPathUsesAbsoluteProjectPath(t *testing.T) {
+	stateDir, err := platform.StateDir()
+	if err != nil {
+		t.Fatalf("get state directory: %v", err)
+	}
+	projectPath, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatalf("get absolute project path: %v", err)
+	}
+
+	got, err := GetManagedEditorLogPath(".")
+	if err != nil {
+		t.Fatalf("GetManagedEditorLogPath failed: %v", err)
+	}
+	want := buildEditorLogPath(stateDir, projectPath)
+	if got != want {
+		t.Fatalf("managed log path = %q, want %q", got, want)
 	}
 }

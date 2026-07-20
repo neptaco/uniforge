@@ -20,6 +20,11 @@ type Editor struct {
 	Path    string
 }
 
+// EditorOpenOptions configures a GUI Unity Editor launch.
+type EditorOpenOptions struct {
+	NoLogFile bool
+}
+
 type unityProcessFinder func(projectPath string) (int, error)
 
 const unityProcessExitPollInterval = 200 * time.Millisecond
@@ -116,6 +121,11 @@ func (e *Editor) Exists() bool {
 
 // Open starts the Unity Editor with the specified project in GUI mode
 func (e *Editor) Open(projectPath string) error {
+	return e.OpenWithOptions(projectPath, EditorOpenOptions{})
+}
+
+// OpenWithOptions starts the Unity Editor with the specified project in GUI mode.
+func (e *Editor) OpenWithOptions(projectPath string, options EditorOpenOptions) error {
 	absProjectPath, err := filepath.Abs(projectPath)
 	if err != nil {
 		return fmt.Errorf("failed to get absolute path: %w", err)
@@ -131,7 +141,18 @@ func (e *Editor) Open(projectPath string) error {
 		return fmt.Errorf("failed to get Unity Editor path: %w", err)
 	}
 
-	args := []string{"-projectPath", absProjectPath}
+	logFilePath := ""
+	if !options.NoLogFile {
+		logFilePath, err = GetManagedEditorLogPath(absProjectPath)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(logFilePath), 0o755); err != nil {
+			return fmt.Errorf("failed to create editor log directory: %w", err)
+		}
+	}
+
+	args := buildEditorLaunchArgs(absProjectPath, logFilePath)
 
 	ui.Debug("Opening Unity Editor", "path", editorPath, "args", strings.Join(args, " "))
 
@@ -149,6 +170,14 @@ func (e *Editor) Open(projectPath string) error {
 
 	ui.Debug("Unity Editor started", "pid", pid)
 	return nil
+}
+
+func buildEditorLaunchArgs(projectPath, logFilePath string) []string {
+	args := []string{"-projectPath", projectPath}
+	if logFilePath != "" {
+		args = append(args, "-logFile", logFilePath)
+	}
+	return args
 }
 
 // Close terminates the Unity Editor process for the specified project

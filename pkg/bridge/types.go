@@ -20,12 +20,13 @@ type ToolDefinition struct {
 }
 
 type ProjectInfo struct {
-	ID         string           `json:"id"`
-	Name       string           `json:"name"`
-	GitRoot    string           `json:"gitRoot,omitempty"`
-	Connected  bool             `json:"connected"`
-	SchemaHash string           `json:"schemaHash,omitempty"`
-	Tools      []ToolDefinition `json:"tools,omitempty"`
+	ID             string           `json:"id"`
+	Name           string           `json:"name"`
+	GitRoot        string           `json:"gitRoot,omitempty"`
+	ConsoleLogPath string           `json:"consoleLogPath,omitempty"`
+	Connected      bool             `json:"connected"`
+	SchemaHash     string           `json:"schemaHash,omitempty"`
+	Tools          []ToolDefinition `json:"tools,omitempty"`
 }
 
 type ClientRegisterResult struct {

@@ -9,8 +9,13 @@ import (
 )
 
 var (
-	openVersion string
+	openVersion   string
+	openNoLogFile bool
 )
+
+var launchEditorWithOptions = func(projectPath, version string, options unity.EditorOpenOptions) error {
+	return unity.NewEditor(version).OpenWithOptions(projectPath, options)
+}
 
 var openCmd = &cobra.Command{
 	Use:   "open [project]",
@@ -41,6 +46,7 @@ func init() {
 	rootCmd.AddCommand(openCmd)
 
 	openCmd.Flags().StringVar(&openVersion, "version", "", "Override Unity Editor version")
+	openCmd.Flags().BoolVar(&openNoLogFile, "no-log-file", false, "Do not write Unity Editor output to a project-specific log file")
 }
 
 func runOpen(cmd *cobra.Command, args []string) error {
@@ -54,18 +60,17 @@ func runOpen(cmd *cobra.Command, args []string) error {
 		version = openVersion
 	}
 
-	return openProject(project.Path, version, project.Name)
-}
-
-func openProject(path, version, name string) error {
-	err := ui.WithSpinnerNoResult("Starting Unity Editor...", func() error {
-		editor := unity.NewEditor(version)
-		return editor.Open(path)
+	err = ui.WithSpinnerNoResult("Starting Unity Editor...", func() error {
+		return launchEditorWithOptions(
+			project.Path,
+			version,
+			unity.EditorOpenOptions{NoLogFile: openNoLogFile},
+		)
 	})
 	if err != nil {
 		return fmt.Errorf("failed to open editor: %w", err)
 	}
 
-	ui.Success("Unity Editor %s started for project: %s", version, name)
+	ui.Success("Unity Editor %s started for project: %s", version, project.Name)
 	return nil
 }
