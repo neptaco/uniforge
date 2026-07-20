@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/neptaco/uniforge/pkg/bridge"
 	"github.com/neptaco/uniforge/pkg/tools"
 	"github.com/neptaco/uniforge/pkg/ui"
 	"github.com/spf13/cobra"
@@ -134,11 +135,10 @@ func runToolCall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !result.Success {
-		errMsg := result.Error
-		if errMsg == "" {
-			errMsg = "unknown error"
+		if result.Result != nil {
+			_ = writeStructuredOutput(toolCallOutput, result.Result)
 		}
-		return fmt.Errorf("tool %s failed: %s\nhint: run `uniforge tool describe %s` to check the expected schema", toolName, errMsg, toolName)
+		return toolCallFailureError(toolName, result)
 	}
 
 	if result.Result == nil {
@@ -147,4 +147,22 @@ func runToolCall(cmd *cobra.Command, args []string) error {
 	}
 
 	return writeStructuredOutput(toolCallOutput, result.Result)
+}
+
+func toolCallFailureError(toolName string, result *bridge.ClientToolCallResult) error {
+	errMsg := result.Error
+	if errMsg == "" {
+		if payload, ok := result.Result.(map[string]any); ok {
+			if message, ok := payload["message"].(string); ok && message != "" {
+				errMsg = message
+			}
+		}
+	}
+	if errMsg == "" {
+		errMsg = "unknown error"
+	}
+	if result.Result == nil {
+		return fmt.Errorf("tool %s failed: %s\nhint: run `uniforge tool describe %s` to check the expected schema", toolName, errMsg, toolName)
+	}
+	return fmt.Errorf("tool %s failed: %s", toolName, errMsg)
 }
