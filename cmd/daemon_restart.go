@@ -10,14 +10,7 @@ var daemonRestartCmd = &cobra.Command{
 	Use:   "restart",
 	Short: "Restart the Go daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := daemonConfig()
-
-		// Stop handles cleanup of info file and SIGKILL escalation
-		if err := daemon.Stop(cmd.Context(), cfg); err != nil {
-			ui.Warn("Failed to stop daemon: %v", err)
-		}
-
-		if err := daemon.Start(cmd.Context(), cfg, daemon.StartOptions{
+		if err := daemon.Restart(cmd.Context(), daemonConfig(), daemon.StartOptions{
 			Args: []string{"daemon", "run"},
 		}); err != nil {
 			return err

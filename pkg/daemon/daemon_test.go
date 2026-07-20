@@ -4,11 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+)
+
+const (
+	daemonHelperModeEnv       = "UNIFORGE_DAEMON_HELPER_MODE"
+	daemonHelperRuntimeDirEnv = "UNIFORGE_DAEMON_HELPER_RUNTIME_DIR"
+	daemonHelperStateDirEnv   = "UNIFORGE_DAEMON_HELPER_STATE_DIR"
+	daemonHelperPIDFileEnv    = "UNIFORGE_DAEMON_HELPER_PID_FILE"
 )
 
 func testConfig(t *testing.T) Config {
@@ -22,6 +32,106 @@ func testConfig(t *testing.T) Config {
 		Name:       "td",
 		RuntimeDir: filepath.Join(dir, "rt"),
 		StateDir:   filepath.Join(dir, "st"),
+	}
+}
+
+func subprocessTestConfig(t *testing.T) (Config, string) {
+	t.Helper()
+	root, err := os.MkdirTemp("", "uf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{
+		Name:       "td",
+		RuntimeDir: filepath.Join(root, "r"),
+		StateDir:   filepath.Join(root, "s"),
+	}
+	pidFile := filepath.Join(root, "pid")
+	t.Cleanup(func() {
+		if IsRunning(cfg) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := Stop(ctx, cfg); err != nil {
+				t.Logf("stop helper daemon: %v", err)
+			}
+			cancel()
+		}
+		if pid, err := readHelperPID(pidFile); err == nil && isProcessAlive(pid) {
+			_ = forceStop(pid)
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := os.RemoveAll(root)
+			if err == nil || time.Now().After(deadline) {
+				if err != nil {
+					t.Errorf("remove helper directory: %v", err)
+				}
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
+	return cfg, pidFile
+}
+
+func daemonHelperStartOptions(t *testing.T, cfg Config, pidFile, mode string) StartOptions {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return StartOptions{
+		Executable: executable,
+		Args:       []string{"-test.run=^TestDaemonSubprocessHelper$"},
+		Env: []string{
+			daemonHelperModeEnv + "=" + mode,
+			daemonHelperRuntimeDirEnv + "=" + cfg.RuntimeDir,
+			daemonHelperStateDirEnv + "=" + cfg.StateDir,
+			daemonHelperPIDFileEnv + "=" + pidFile,
+		},
+		WaitTimeout: 3 * time.Second,
+	}
+}
+
+func readHelperPID(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(string(data)))
+}
+
+func TestDaemonSubprocessHelper(t *testing.T) {
+	mode := os.Getenv(daemonHelperModeEnv)
+	if mode == "" {
+		return
+	}
+	if err := os.WriteFile(os.Getenv(daemonHelperPIDFileEnv), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatalf("write helper PID: %v", err)
+	}
+	if mode == "exit-1" {
+		os.Exit(1)
+	}
+	if mode != "run" {
+		t.Fatalf("unknown helper mode %q", mode)
+	}
+
+	cfg := Config{
+		Name:       "td",
+		RuntimeDir: os.Getenv(daemonHelperRuntimeDirEnv),
+		StateDir:   os.Getenv(daemonHelperStateDirEnv),
+	}
+	shutdown := make(chan struct{})
+	if err := RunDaemon(context.Background(), cfg, RunOptions{
+		Meta: []byte(`{"helper":true}`),
+		Serve: func(net.Listener) error {
+			<-shutdown
+			return nil
+		},
+		OnShutdown: func() {
+			close(shutdown)
+		},
+	}); err != nil {
+		t.Fatalf("run daemon helper: %v", err)
 	}
 }
 
@@ -139,6 +249,82 @@ func TestIsRunningAndStop(t *testing.T) {
 	// Stop on non-existent is safe
 	if err := Stop(context.Background(), cfg); err != nil {
 		t.Fatalf("stop non-existent: %v", err)
+	}
+}
+
+func TestStartWithRealRunDaemonSucceeds(t *testing.T) {
+	cfg, pidFile := subprocessTestConfig(t)
+	opts := daemonHelperStartOptions(t, cfg, pidFile, "run")
+
+	if err := Start(context.Background(), cfg, opts); err != nil {
+		t.Fatalf("Start returned an error: %v", err)
+	}
+	info, err := ReadInfo(cfg)
+	if err != nil {
+		t.Fatalf("read daemon info: %v", err)
+	}
+	childPID, err := readHelperPID(pidFile)
+	if err != nil {
+		t.Fatalf("read helper PID: %v", err)
+	}
+	if info.PID != childPID {
+		t.Fatalf("info PID = %d, want child PID %d", info.PID, childPID)
+	}
+}
+
+func TestStartFailsFastWhenChildExitsEarly(t *testing.T) {
+	cfg, pidFile := subprocessTestConfig(t)
+	opts := daemonHelperStartOptions(t, cfg, pidFile, "exit-1")
+	logPath, err := cfg.logPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = Start(context.Background(), cfg, opts)
+	if err == nil {
+		t.Fatal("Start should fail when the daemon process exits early")
+	}
+	if !strings.Contains(err.Error(), "daemon process exited") {
+		t.Errorf("error = %q, want child process exit detail", err)
+	}
+	if !strings.Contains(err.Error(), logPath) {
+		t.Errorf("error = %q, want log path %q", err, logPath)
+	}
+}
+
+func TestRestartReplacesRunningDaemon(t *testing.T) {
+	cfg, pidFile := subprocessTestConfig(t)
+	opts := daemonHelperStartOptions(t, cfg, pidFile, "run")
+
+	if err := Start(context.Background(), cfg, opts); err != nil {
+		t.Fatalf("start daemon: %v", err)
+	}
+	oldInfo, err := ReadInfo(cfg)
+	if err != nil {
+		t.Fatalf("read original daemon info: %v", err)
+	}
+
+	if err := Restart(context.Background(), cfg, opts); err != nil {
+		t.Fatalf("Restart returned an error: %v", err)
+	}
+	newInfo, err := ReadInfo(cfg)
+	if err != nil {
+		t.Fatalf("read replacement daemon info: %v", err)
+	}
+	if newInfo.PID == oldInfo.PID {
+		t.Fatalf("replacement PID = %d, want a PID different from %d", newInfo.PID, oldInfo.PID)
+	}
+}
+
+func TestRestartFromCleanState(t *testing.T) {
+	cfg, pidFile := subprocessTestConfig(t)
+	opts := daemonHelperStartOptions(t, cfg, pidFile, "run")
+
+	if err := Restart(context.Background(), cfg, opts); err != nil {
+		t.Fatalf("Restart returned an error: %v", err)
+	}
+	if _, err := ReadInfo(cfg); err != nil {
+		t.Fatalf("read daemon info after clean restart: %v", err)
 	}
 }
 
