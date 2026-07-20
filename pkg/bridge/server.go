@@ -23,8 +23,15 @@ type unityRegisterParams struct {
 	ProjectName       string           `json:"projectName"`
 	GitRoot           string           `json:"gitRoot,omitempty"`
 	ConsoleLogPath    string           `json:"consoleLogPath,omitempty"`
+	PackageVersion    string           `json:"packageVersion,omitempty"`
 	Tools             []ToolDefinition `json:"tools"`
 	PendingRequestIDs []string         `json:"pendingRequestIds,omitempty"`
+}
+
+type unityRegisterResult struct {
+	Success              bool   `json:"success"`
+	LatestPackageVersion string `json:"latestPackageVersion,omitempty"`
+	MinPackageVersion    string `json:"minPackageVersion,omitempty"`
 }
 
 type unityToolsUpdateParams struct {
@@ -74,6 +81,7 @@ type serverConnection struct {
 	projectName    string
 	gitRoot        string
 	consoleLogPath string
+	packageVersion string
 	tools          []ToolDefinition
 	schemaHash     string
 }
@@ -94,25 +102,40 @@ type pendingRequest struct {
 	awaitingUnityContinuation bool
 }
 
-type Server struct {
-	listener      net.Listener
-	mu            sync.Mutex
-	unityConns    map[string]*serverConnection
-	clientConns   map[string]*serverConnection
-	connections   map[*serverConnection]struct{}
-	pending       map[string]*pendingRequest
-	stopped       bool
-	nextConnID    uint64
-	nextRequestID uint64
+type ServerOption func(*Server)
+
+func WithLatestUnityPackageVersionProvider(provider func() string) ServerOption {
+	return func(server *Server) {
+		server.latestUnityPackageVersionProvider = provider
+	}
 }
 
-func NewServer() *Server {
-	return &Server{
+type Server struct {
+	listener                          net.Listener
+	mu                                sync.Mutex
+	unityConns                        map[string]*serverConnection
+	clientConns                       map[string]*serverConnection
+	connections                       map[*serverConnection]struct{}
+	pending                           map[string]*pendingRequest
+	latestUnityPackageVersionProvider func() string
+	stopped                           bool
+	nextConnID                        uint64
+	nextRequestID                     uint64
+}
+
+func NewServer(options ...ServerOption) *Server {
+	server := &Server{
 		unityConns:  map[string]*serverConnection{},
 		clientConns: map[string]*serverConnection{},
 		connections: map[*serverConnection]struct{}{},
 		pending:     map[string]*pendingRequest{},
 	}
+	for _, option := range options {
+		if option != nil {
+			option(server)
+		}
+	}
+	return server
 }
 
 // Serve accepts connections on the given listener until the listener is closed.
@@ -233,7 +256,7 @@ func (s *Server) handleRequest(conn *serverConnection, requestID string, envelop
 			return
 		}
 		s.handleUnityRegister(conn, params)
-		_ = conn.send(newSuccessResponse(requestID, map[string]any{"success": true}))
+		_ = conn.send(newSuccessResponse(requestID, s.buildUnityRegisterResult()))
 	case "client.register":
 		var params clientRegisterParams
 		if err := json.Unmarshal(envelope.Params, &params); err != nil {
@@ -349,6 +372,7 @@ func (s *Server) handleUnityRegister(conn *serverConnection, params unityRegiste
 	conn.projectName = params.ProjectName
 	conn.gitRoot = params.GitRoot
 	conn.consoleLogPath = params.ConsoleLogPath
+	conn.packageVersion = params.PackageVersion
 	conn.tools = append([]ToolDefinition(nil), params.Tools...)
 	conn.schemaHash = ComputeSchemaHash(params.Tools)
 	s.unityConns[params.ProjectID] = conn
@@ -358,6 +382,17 @@ func (s *Server) handleUnityRegister(conn *serverConnection, params unityRegiste
 	}
 
 	s.resumePendingRequests(params.ProjectID, params.PendingRequestIDs)
+}
+
+func (s *Server) buildUnityRegisterResult() unityRegisterResult {
+	result := unityRegisterResult{
+		Success:           true,
+		MinPackageVersion: MinRecommendedUnityPackageVersion,
+	}
+	if s.latestUnityPackageVersionProvider != nil {
+		result.LatestPackageVersion = s.latestUnityPackageVersionProvider()
+	}
+	return result
 }
 
 func (s *Server) handleClientRegister(conn *serverConnection, params clientRegisterParams) {
@@ -382,6 +417,7 @@ func (s *Server) buildProjectsResult(includeTools bool) ClientListProjectsResult
 			Name:           unityConn.projectName,
 			GitRoot:        unityConn.gitRoot,
 			ConsoleLogPath: unityConn.consoleLogPath,
+			PackageVersion: unityConn.packageVersion,
 			Connected:      true,
 			SchemaHash:     unityConn.schemaHash,
 		}

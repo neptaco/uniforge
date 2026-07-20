@@ -396,3 +396,172 @@ func TestUnityRegisterPublishesConsoleLogPath(t *testing.T) {
 		t.Fatalf("consoleLogPath = %q, want %q", got, "/logs/game.log")
 	}
 }
+
+func TestUnityRegisterPublishesPackageVersion(t *testing.T) {
+	server := NewServer()
+	conn := &serverConnection{id: "unity-1"}
+	server.handleUnityRegister(conn, unityRegisterParams{
+		ProjectID:      "/repos/game",
+		ProjectName:    "Game",
+		PackageVersion: "0.11.0",
+	})
+
+	result := server.buildProjectsResult(false)
+	if len(result.Projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(result.Projects))
+	}
+	if got := result.Projects[0].PackageVersion; got != "0.11.0" {
+		t.Fatalf("packageVersion = %q, want %q", got, "0.11.0")
+	}
+}
+
+func TestUnityRegisterWithoutPackageVersionOmitsItFromProjects(t *testing.T) {
+	server := NewServer()
+	conn := &serverConnection{id: "unity-1"}
+	server.handleUnityRegister(conn, unityRegisterParams{
+		ProjectID:   "/repos/game",
+		ProjectName: "Game",
+	})
+
+	result := server.buildProjectsResult(false)
+	if len(result.Projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(result.Projects))
+	}
+	if got := result.Projects[0].PackageVersion; got != "" {
+		t.Fatalf("packageVersion = %q, want empty", got)
+	}
+
+	encoded, err := json.Marshal(result.Projects[0])
+	if err != nil {
+		t.Fatalf("marshal project: %v", err)
+	}
+	var project map[string]any
+	if err := json.Unmarshal(encoded, &project); err != nil {
+		t.Fatalf("decode project: %v", err)
+	}
+	if _, exists := project["packageVersion"]; exists {
+		t.Fatalf("packageVersion should be omitted, got %s", encoded)
+	}
+}
+
+func TestUnityRegisterResponseIncludesLatestPackageVersion(t *testing.T) {
+	providerCalls := 0
+	server := NewServer(WithLatestUnityPackageVersionProvider(func() string {
+		providerCalls++
+		return "0.12.0"
+	}))
+
+	result := invokeUnityRegister(t, server, unityRegisterParams{
+		ProjectID:      "/repos/game",
+		ProjectName:    "Game",
+		PackageVersion: "0.11.0",
+	})
+
+	if got := result["success"]; got != true {
+		t.Fatalf("success = %#v, want true", got)
+	}
+	if got := result["latestPackageVersion"]; got != "0.12.0" {
+		t.Fatalf("latestPackageVersion = %#v, want %q", got, "0.12.0")
+	}
+	if providerCalls != 1 {
+		t.Fatalf("provider calls = %d, want 1", providerCalls)
+	}
+	assertMinPackageVersion(t, result)
+}
+
+func TestUnityRegisterResponseOmitsUnknownPackageVersions(t *testing.T) {
+	tests := []struct {
+		name   string
+		server *Server
+	}{
+		{
+			name:   "nil provider",
+			server: NewServer(WithLatestUnityPackageVersionProvider(nil)),
+		},
+		{
+			name: "empty provider",
+			server: NewServer(WithLatestUnityPackageVersionProvider(func() string {
+				return ""
+			})),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := invokeUnityRegister(t, tt.server, unityRegisterParams{
+				ProjectID:   "/repos/game",
+				ProjectName: "Game",
+			})
+
+			if got := result["success"]; got != true {
+				t.Fatalf("success = %#v, want true", got)
+			}
+			if _, exists := result["latestPackageVersion"]; exists {
+				t.Fatalf("latestPackageVersion should be omitted, got %#v", result)
+			}
+			assertMinPackageVersion(t, result)
+		})
+	}
+}
+
+func invokeUnityRegister(t *testing.T, server *Server, params unityRegisterParams) map[string]any {
+	t.Helper()
+
+	serverSide, unitySide := net.Pipe()
+	defer func() { _ = serverSide.Close() }()
+	defer func() { _ = unitySide.Close() }()
+
+	encodedParams, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal unity.register params: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		server.handleRequest(&serverConnection{id: "unity-test", conn: serverSide}, "register-1", rpcEnvelope{
+			Method: "unity.register",
+			Params: encodedParams,
+		})
+		close(done)
+	}()
+
+	if err := unitySide.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set response deadline: %v", err)
+	}
+	responseLine, err := bufio.NewReader(unitySide).ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("read unity.register response: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("unity.register handler did not return")
+	}
+
+	var response struct {
+		Result map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal(responseLine, &response); err != nil {
+		t.Fatalf("decode unity.register response: %v", err)
+	}
+	if response.Result == nil {
+		t.Fatalf("unity.register response has no result: %s", responseLine)
+	}
+	return response.Result
+}
+
+func assertMinPackageVersion(t *testing.T, result map[string]any) {
+	t.Helper()
+
+	if MinRecommendedUnityPackageVersion == "" {
+		if _, exists := result["minPackageVersion"]; exists {
+			t.Fatalf("minPackageVersion should be omitted, got %#v", result)
+		}
+		return
+	}
+
+	if got := result["minPackageVersion"]; got != MinRecommendedUnityPackageVersion {
+		t.Fatalf("minPackageVersion = %#v, want %q", got, MinRecommendedUnityPackageVersion)
+	}
+}

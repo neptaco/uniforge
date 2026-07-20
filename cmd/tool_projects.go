@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"github.com/neptaco/uniforge/pkg/bridge"
+	"github.com/neptaco/uniforge/pkg/ui"
+	"github.com/neptaco/uniforge/pkg/updater"
 	"github.com/spf13/cobra"
 )
 
@@ -30,6 +32,7 @@ type toolProjectEntry struct {
 	Name           string   `json:"name" yaml:"name"`
 	GitRoot        string   `json:"gitRoot,omitempty" yaml:"gitRoot,omitempty"`
 	ConsoleLogPath string   `json:"consoleLogPath,omitempty" yaml:"consoleLogPath,omitempty"`
+	PackageVersion string   `json:"packageVersion,omitempty" yaml:"packageVersion,omitempty"`
 	Connected      bool     `json:"connected" yaml:"connected"`
 	Tools          []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 }
@@ -54,7 +57,27 @@ func runToolProjects(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	if opts, err := unityPackageAutoCheckOptions(); err == nil {
+		if latestVersion, err := updater.ReadUnityPackageLatestVersion(opts.CachePath); err == nil {
+			noteUnityPackageUpdates(projectsResult.Projects, latestVersion, ui.Note)
+		}
+	}
+
 	return writeStructuredOutput(toolProjectsOutput, buildToolProjectEntries(projectsResult.Projects))
+}
+
+func noteUnityPackageUpdates(projects []bridge.ProjectInfo, latestVersion string, note func(format string, args ...any)) {
+	for _, project := range projects {
+		if !updater.IsNewerVersion(latestVersion, project.PackageVersion) {
+			continue
+		}
+		note(
+			"Unity package update available for %s: %s -> %s (see uniforge-unity releases)",
+			project.Name,
+			project.PackageVersion,
+			latestVersion,
+		)
+	}
 }
 
 func buildToolProjectEntries(projects []bridge.ProjectInfo) []toolProjectEntry {
@@ -65,6 +88,7 @@ func buildToolProjectEntries(projects []bridge.ProjectInfo) []toolProjectEntry {
 			Name:           project.Name,
 			GitRoot:        project.GitRoot,
 			ConsoleLogPath: project.ConsoleLogPath,
+			PackageVersion: project.PackageVersion,
 			Connected:      project.Connected,
 		}
 		for _, tool := range project.Tools {
