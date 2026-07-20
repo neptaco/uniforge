@@ -80,6 +80,8 @@ uniforge daemon start|stop|restart|status     # rarely needed; auto-started on d
 
 ## Tips
 
+- **Update from a package notification:** When UniForge reports an available Unity package update, run `uniforge package update <project>`.
+- **Pin the package to a release tag:** Prefer `...git?path=...#vX.Y.Z` for the `dev.crysta.uniforge` entry in `Packages/manifest.json`.
 - **Batch mode and an open Editor are mutually exclusive.** If the project is open in the Editor, `compile|test|run` fails with a lock error — use `uniforge tool call` instead (e.g. `run-tests`). Conversely, close the Editor (`uniforge close`) before CI-style runs in batch mode.
 - **Choosing a test platform:** type/namespace/asmdef/Editor-extension changes → `editmode`; runtime or UI behavior → `playmode`; just want a compile check → `compile`.
 - **Run `meta check` after file operations** — especially after `git mv`, directory restructuring, or `git merge`/`git rebase`. Missing or orphan `.meta` files and duplicate GUIDs cause subtle asset breakage.
