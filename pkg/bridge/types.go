@@ -1,8 +1,9 @@
 package bridge
 
 const (
-	ProtocolVersion = 2
-	PackageVersion  = "0.1.0"
+	ProtocolVersion                   = 2
+	PackageVersion                    = "0.1.0"
+	MinRecommendedUnityPackageVersion = ""
 )
 
 // DaemonMeta is bridge-specific metadata stored in daemon.Info.Metadata.
@@ -24,6 +25,7 @@ type ProjectInfo struct {
 	Name           string           `json:"name"`
 	GitRoot        string           `json:"gitRoot,omitempty"`
 	ConsoleLogPath string           `json:"consoleLogPath,omitempty"`
+	PackageVersion string           `json:"packageVersion,omitempty"`
 	Connected      bool             `json:"connected"`
 	SchemaHash     string           `json:"schemaHash,omitempty"`
 	Tools          []ToolDefinition `json:"tools,omitempty"`

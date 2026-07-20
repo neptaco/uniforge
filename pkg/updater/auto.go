@@ -13,7 +13,14 @@ import (
 	"time"
 )
 
-const autoStateSchemaVersion = 1
+const (
+	autoStateSchemaVersion = 1
+
+	// UnityPackageUpdateCacheFilename is the cache file used for Unity package
+	// release checks.
+	UnityPackageUpdateCacheFilename = "unity-package-update-check.json"
+	defaultUnityPackageAPIBase      = "https://api.github.com/repos/neptaco/uniforge-unity"
+)
 
 var errAutoCheckLocked = errors.New("automatic update check is already claimed")
 
@@ -32,8 +39,9 @@ type AutoCheckOptions struct {
 // AutoCheckDecision describes work that can be done without waiting for the
 // network. CheckDue is true only for the process that claimed the next check.
 type AutoCheckDecision struct {
-	CheckDue bool
-	Notice   *AutoUpdateNotice
+	CheckDue      bool
+	LatestVersion string
+	Notice        *AutoUpdateNotice
 }
 
 // AutoUpdateNotice is a cached update notification ready to be displayed.
@@ -53,17 +61,49 @@ type autoCheckState struct {
 	FailureCount    int       `json:"failure_count,omitempty"`
 }
 
+type autoCheckTarget struct {
+	defaultAPIBase        string
+	requireCurrentVersion bool
+	includeNotice         bool
+	stripVersionPrefix    bool
+}
+
+var (
+	cliAutoCheckTarget = autoCheckTarget{
+		defaultAPIBase:        defaultAPIBase,
+		requireCurrentVersion: true,
+		includeNotice:         true,
+	}
+	unityPackageAutoCheckTarget = autoCheckTarget{
+		defaultAPIBase:     defaultUnityPackageAPIBase,
+		stripVersionPrefix: true,
+	}
+)
+
 // PrepareAutoCheck reads cached update state and atomically claims a refresh
 // when the cache is stale. It never performs network I/O.
 func PrepareAutoCheck(opts AutoCheckOptions) (AutoCheckDecision, error) {
+	return prepareAutoCheck(opts, cliAutoCheckTarget)
+}
+
+// PrepareUnityPackageAutoCheck reads the cached Unity package release and
+// atomically claims a refresh when it is due. It never performs network I/O.
+func PrepareUnityPackageAutoCheck(opts AutoCheckOptions) (AutoCheckDecision, error) {
+	return prepareAutoCheck(opts, unityPackageAutoCheckTarget)
+}
+
+func prepareAutoCheck(opts AutoCheckOptions, target autoCheckTarget) (AutoCheckDecision, error) {
 	opts = defaultAutoCheckOptions(opts)
-	if !isReleaseVersion(opts.CurrentVersion) || opts.CachePath == "" {
+	if !target.enabled(opts) {
 		return AutoCheckDecision{}, nil
 	}
 
 	now := opts.Now()
 	state, _ := loadAutoCheckState(opts.CachePath)
-	decision := AutoCheckDecision{Notice: cachedNotice(state, opts, now)}
+	decision := AutoCheckDecision{LatestVersion: target.cachedVersion(state.LatestVersion)}
+	if target.includeNotice {
+		decision.Notice = cachedNotice(state, opts, now)
+	}
 	if !state.NextAttemptAt.IsZero() && now.Before(state.NextAttemptAt) {
 		return decision, nil
 	}
@@ -91,20 +131,37 @@ func PrepareAutoCheck(opts AutoCheckOptions) (AutoCheckDecision, error) {
 // RefreshAutoCheck fetches the latest release and stores it for a later CLI
 // invocation. Callers should run this in the detached helper process.
 func RefreshAutoCheck(ctx context.Context, opts AutoCheckOptions) error {
+	return refreshAutoCheck(ctx, opts, cliAutoCheckTarget)
+}
+
+// RefreshUnityPackageAutoCheck fetches the latest uniforge-unity release and
+// stores its version without a leading v for a later, network-free read.
+func RefreshUnityPackageAutoCheck(ctx context.Context, opts AutoCheckOptions) error {
+	return refreshAutoCheck(ctx, opts, unityPackageAutoCheckTarget)
+}
+
+func refreshAutoCheck(ctx context.Context, opts AutoCheckOptions, checkTarget autoCheckTarget) error {
 	opts = defaultAutoCheckOptions(opts)
-	if !isReleaseVersion(opts.CurrentVersion) || opts.CachePath == "" {
+	if !checkTarget.enabled(opts) {
 		return nil
 	}
 
+	apiBase := opts.APIBase
+	if apiBase == "" {
+		apiBase = checkTarget.defaultAPIBase
+	}
 	updaterOpts := defaults(Options{
 		CurrentVersion: opts.CurrentVersion,
 		Version:        "latest",
-		APIBase:        opts.APIBase,
+		APIBase:        apiBase,
 	})
 	if opts.HTTPClient != nil {
 		updaterOpts.HTTPClient = opts.HTTPClient
 	}
-	target, fetchErr := resolveVersion(ctx, updaterOpts)
+	latestVersion, fetchErr := resolveVersion(ctx, updaterOpts)
+	if fetchErr == nil {
+		latestVersion = checkTarget.cachedVersion(latestVersion)
+	}
 	now := opts.Now()
 
 	err := withAutoCheckLock(opts.CachePath, func() error {
@@ -117,7 +174,7 @@ func RefreshAutoCheck(ctx context.Context, opts AutoCheckOptions) error {
 		} else {
 			state.CheckedAt = now
 			state.NextAttemptAt = now.Add(opts.CheckInterval)
-			state.LatestVersion = target
+			state.LatestVersion = latestVersion
 			state.FailureCount = 0
 		}
 		return saveAutoCheckState(opts.CachePath, state)
@@ -126,6 +183,19 @@ func RefreshAutoCheck(ctx context.Context, opts AutoCheckOptions) error {
 		return err
 	}
 	return fetchErr
+}
+
+// ReadUnityPackageLatestVersion reads the cached Unity package release without
+// claiming or refreshing it. Invalid cached versions are treated as unknown.
+func ReadUnityPackageLatestVersion(cachePath string) (string, error) {
+	if cachePath == "" {
+		return "", nil
+	}
+	state, err := loadAutoCheckState(cachePath)
+	if err != nil {
+		return "", err
+	}
+	return unityPackageAutoCheckTarget.cachedVersion(state.LatestVersion), nil
 }
 
 // RecordAutoNotification throttles repeated notifications for one release.
@@ -158,6 +228,24 @@ func defaultAutoCheckOptions(opts AutoCheckOptions) AutoCheckOptions {
 		opts.Now = time.Now
 	}
 	return opts
+}
+
+func (target autoCheckTarget) enabled(opts AutoCheckOptions) bool {
+	if opts.CachePath == "" {
+		return false
+	}
+	return !target.requireCurrentVersion || isReleaseVersion(opts.CurrentVersion)
+}
+
+func (target autoCheckTarget) cachedVersion(version string) string {
+	version = strings.TrimSpace(version)
+	if _, ok := parseVersion(version); !ok {
+		return ""
+	}
+	if target.stripVersionPrefix {
+		return strings.TrimPrefix(version, "v")
+	}
+	return version
 }
 
 func cachedNotice(state autoCheckState, opts AutoCheckOptions, now time.Time) *AutoUpdateNotice {
@@ -194,7 +282,9 @@ func isReleaseVersion(version string) bool {
 	return validVersion(version)
 }
 
-func isNewerVersion(candidate, current string) bool {
+// IsNewerVersion reports whether candidate is a newer X.Y.Z release than
+// current. Both raw and v-prefixed versions are accepted.
+func IsNewerVersion(candidate, current string) bool {
 	candidateParts, ok := parseVersion(candidate)
 	if !ok {
 		return false
@@ -209,6 +299,10 @@ func isNewerVersion(candidate, current string) bool {
 		}
 	}
 	return false
+}
+
+func isNewerVersion(candidate, current string) bool {
+	return IsNewerVersion(candidate, current)
 }
 
 func parseVersion(version string) ([3]int, bool) {
