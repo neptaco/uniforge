@@ -556,6 +556,10 @@ func mustReadFile(t *testing.T, path string) []byte {
 
 func assertFileMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Windows has no Unix permission bits; Go reports files as 666/444.
+		return
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
