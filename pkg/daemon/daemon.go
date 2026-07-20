@@ -22,12 +22,15 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -47,6 +50,57 @@ type Daemon struct {
 	info     Info
 	mu       sync.Mutex
 	locked   bool
+}
+
+// RunOptions configures a daemon process running in the foreground.
+type RunOptions struct {
+	// Meta is written to the daemon info file as application-specific metadata.
+	Meta []byte
+	// Serve handles connections accepted by the daemon listener.
+	Serve func(net.Listener) error
+	// OnShutdown is called once before daemon resources are released.
+	OnShutdown func()
+}
+
+// RunDaemon runs a daemon in the foreground until its server stops or the
+// process receives an interrupt or termination signal.
+func RunDaemon(ctx context.Context, config Config, opts RunOptions) error {
+	// Shutdown remains signal-driven, matching the foreground command's
+	// existing behavior. Keep ctx in the API for lifecycle callers.
+	_ = ctx
+
+	d := New(config)
+	if err := d.Lock(); err != nil {
+		return err
+	}
+
+	listener, err := d.Listen(opts.Meta)
+	if err != nil {
+		_ = d.Shutdown()
+		return err
+	}
+	info := d.Info()
+	fmt.Printf("daemon listening on %s (pid %d)\n", info.Endpoint, info.PID)
+
+	var stopOnce sync.Once
+	shutdown := func() {
+		stopOnce.Do(func() {
+			if opts.OnShutdown != nil {
+				opts.OnShutdown()
+			}
+			_ = d.Shutdown()
+		})
+	}
+	defer shutdown()
+
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signals
+		shutdown()
+	}()
+
+	return opts.Serve(listener)
 }
 
 // New creates a daemon manager with the given configuration.

@@ -134,6 +134,21 @@ func Start(ctx context.Context, config Config, opts StartOptions) error {
 	return startUnlocked(ctx, config, opts)
 }
 
+// Restart stops the current daemon and starts a replacement while holding one
+// lifecycle lock for the complete operation.
+func Restart(ctx context.Context, config Config, opts StartOptions) error {
+	lock, err := acquireLifecycleLock(ctx, config)
+	if err != nil {
+		return err
+	}
+	defer releaseLifecycleLock(lock)
+
+	if err := stopUnlocked(ctx, config); err != nil {
+		return err
+	}
+	return startUnlocked(ctx, config, opts)
+}
+
 func startUnlocked(ctx context.Context, config Config, opts StartOptions) error {
 	if IsRunning(config) {
 		return nil
@@ -183,6 +198,10 @@ func startUnlocked(ctx context.Context, config Config, opts StartOptions) error 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
+	waitErr := make(chan error, 1)
+	go func() {
+		waitErr <- cmd.Wait()
+	}()
 
 	timeout := opts.WaitTimeout
 	if timeout <= 0 {
@@ -194,9 +213,20 @@ func startUnlocked(ctx context.Context, config Config, opts StartOptions) error 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-waitErr:
+			exitState := "unknown"
+			if cmd.ProcessState != nil {
+				exitState = cmd.ProcessState.String()
+			} else if err != nil {
+				exitState = err.Error()
+			}
+			return fmt.Errorf("daemon process exited before advertising its endpoint (exit: %s); see log: %s", exitState, logPath)
 		case <-time.After(pollInterval):
 		}
 		if info, err := ReadInfo(config); err == nil && info != nil && info.PID == cmd.Process.Pid {
+			// The Wait goroutine intentionally remains for the daemon lifetime after
+			// readiness. The starter is a short-lived CLI process, and Wait also
+			// ensures an early child exit is reaped while that process is alive.
 			return nil
 		}
 	}
