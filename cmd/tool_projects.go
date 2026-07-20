@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"github.com/neptaco/uniforge/pkg/bridge"
 	"github.com/spf13/cobra"
 )
 
@@ -25,11 +26,12 @@ func init() {
 }
 
 type toolProjectEntry struct {
-	ID        string   `json:"id" yaml:"id"`
-	Name      string   `json:"name" yaml:"name"`
-	GitRoot   string   `json:"gitRoot,omitempty" yaml:"gitRoot,omitempty"`
-	Connected bool     `json:"connected" yaml:"connected"`
-	Tools     []string `json:"tools,omitempty" yaml:"tools,omitempty"`
+	ID             string   `json:"id" yaml:"id"`
+	Name           string   `json:"name" yaml:"name"`
+	GitRoot        string   `json:"gitRoot,omitempty" yaml:"gitRoot,omitempty"`
+	ConsoleLogPath string   `json:"consoleLogPath,omitempty" yaml:"consoleLogPath,omitempty"`
+	Connected      bool     `json:"connected" yaml:"connected"`
+	Tools          []string `json:"tools,omitempty" yaml:"tools,omitempty"`
 }
 
 func runToolProjects(cmd *cobra.Command, args []string) error {
@@ -52,19 +54,23 @@ func runToolProjects(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	entries := make([]toolProjectEntry, 0, len(projectsResult.Projects))
-	for _, project := range projectsResult.Projects {
+	return writeStructuredOutput(toolProjectsOutput, buildToolProjectEntries(projectsResult.Projects))
+}
+
+func buildToolProjectEntries(projects []bridge.ProjectInfo) []toolProjectEntry {
+	entries := make([]toolProjectEntry, 0, len(projects))
+	for _, project := range projects {
 		entry := toolProjectEntry{
-			ID:        project.ID,
-			Name:      project.Name,
-			GitRoot:   project.GitRoot,
-			Connected: project.Connected,
+			ID:             project.ID,
+			Name:           project.Name,
+			GitRoot:        project.GitRoot,
+			ConsoleLogPath: project.ConsoleLogPath,
+			Connected:      project.Connected,
 		}
 		for _, tool := range project.Tools {
 			entry.Tools = append(entry.Tools, tool.Name)
 		}
 		entries = append(entries, entry)
 	}
-
-	return writeStructuredOutput(toolProjectsOutput, entries)
+	return entries
 }

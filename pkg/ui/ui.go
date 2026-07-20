@@ -46,6 +46,11 @@ func Info(format string, args ...any) {
 	fmt.Println(infoStyle.Render(fmt.Sprintf(format, args...)))
 }
 
+// Note prints an informational note to stderr.
+func Note(format string, args ...any) {
+	fmt.Fprintln(os.Stderr, infoStyle.Render(fmt.Sprintf(format, args...)))
+}
+
 // Success prints a success message with checkmark
 func Success(format string, args ...any) {
 	fmt.Println(successStyle.Render("✓ " + fmt.Sprintf(format, args...)))

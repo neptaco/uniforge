@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -13,19 +14,21 @@ type CwdHints struct {
 }
 
 func ResolveFromCwd(startDir string) CwdHints {
-	dir := startDir
+	dir := resolveStartPath(startDir)
 	if dir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return CwdHints{}
-		}
-		dir = cwd
+		return CwdHints{}
 	}
 
 	return CwdHints{
 		ProjectPath: findUnityProjectRoot(dir),
 		GitRoot:     findGitRoot(dir),
 	}
+}
+
+// ResolveUnityProjectPath finds the Unity project containing an existing path
+// without scanning for a Git root.
+func ResolveUnityProjectPath(startPath string) string {
+	return findUnityProjectRoot(resolveStartPath(startPath))
 }
 
 func MatchProject(hints CwdHints, projects []ProjectInfo) *ProjectInfo {
@@ -81,8 +84,66 @@ func ResolveProject(explicit string, hints CwdHints, projects []ProjectInfo) (*P
 	return nil, fmt.Errorf("multiple Unity projects are connected; use --project")
 }
 
+// ResolveProjectOrPath resolves a connected project or a local Unity project
+// path. An explicit argument never falls through to cwd or connection-count
+// selection when it cannot be resolved.
+func ResolveProjectOrPath(explicit, cwd string, projects []ProjectInfo) (*ProjectInfo, string, error) {
+	if explicit != "" {
+		project, err := findExplicitProjectFromCwd(explicit, cwd, projects)
+		if err != nil {
+			return nil, "", err
+		}
+		if project != nil {
+			return project, "", nil
+		}
+
+		explicitPath := explicit
+		if !filepath.IsAbs(explicitPath) && cwd != "" {
+			explicitPath = filepath.Join(cwd, explicitPath)
+		}
+		if projectPath := ResolveUnityProjectPath(explicitPath); projectPath != "" {
+			if matched := MatchProject(CwdHints{ProjectPath: projectPath}, projects); matched != nil {
+				return matched, "", nil
+			}
+			return nil, projectPath, nil
+		}
+
+		return nil, "", fmt.Errorf("project not found: %s", explicit)
+	}
+
+	startPath := resolveStartPath(cwd)
+	if projectPath := findUnityProjectRoot(startPath); projectPath != "" {
+		if matched := MatchProject(CwdHints{ProjectPath: projectPath}, projects); matched != nil {
+			return matched, "", nil
+		}
+		return nil, projectPath, nil
+	}
+
+	if gitRoot := findGitRoot(startPath); gitRoot != "" {
+		if matched := MatchProject(CwdHints{GitRoot: gitRoot}, projects); matched != nil {
+			return matched, "", nil
+		}
+	}
+
+	if len(projects) == 1 {
+		return &projects[0], "", nil
+	}
+	if len(projects) > 1 {
+		return nil, "", fmt.Errorf("multiple Unity projects are connected; specify a project argument")
+	}
+	return nil, "", nil
+}
+
 func findExplicitProject(explicit string, projects []ProjectInfo) (*ProjectInfo, error) {
-	normalizedExplicit := normalizePath(explicit)
+	return findExplicitProjectFromCwd(explicit, "", projects)
+}
+
+func findExplicitProjectFromCwd(explicit, cwd string, projects []ProjectInfo) (*ProjectInfo, error) {
+	explicitID := explicit
+	if !filepath.IsAbs(explicitID) && cwd != "" {
+		explicitID = filepath.Join(cwd, explicitID)
+	}
+	normalizedExplicit := normalizePath(explicitID)
 
 	for index := range projects {
 		project := &projects[index]
@@ -124,13 +185,16 @@ func findExplicitProject(explicit string, projects []ProjectInfo) (*ProjectInfo,
 }
 
 func findUnityProjectRoot(startPath string) string {
-	current := filepath.Clean(startPath)
+	current := existingStartDirectory(startPath)
+	if current == "" {
+		return ""
+	}
 
 	for {
 		assetsDir := filepath.Join(current, "Assets")
 		projectSettingsDir := filepath.Join(current, "ProjectSettings")
 		if isDir(assetsDir) && isDir(projectSettingsDir) {
-			return normalizePath(current)
+			return current
 		}
 
 		parent := filepath.Dir(current)
@@ -142,12 +206,15 @@ func findUnityProjectRoot(startPath string) string {
 }
 
 func findGitRoot(startPath string) string {
-	current := filepath.Clean(startPath)
+	current := existingStartDirectory(startPath)
+	if current == "" {
+		return ""
+	}
 
 	for {
 		gitPath := filepath.Join(current, ".git")
 		if exists(gitPath) {
-			return normalizePath(current)
+			return current
 		}
 
 		parent := filepath.Dir(current)
@@ -156,6 +223,36 @@ func findGitRoot(startPath string) string {
 		}
 		current = parent
 	}
+}
+
+func resolveStartPath(startPath string) string {
+	if startPath == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return ""
+		}
+		startPath = cwd
+	}
+
+	absolutePath, err := filepath.Abs(startPath)
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(absolutePath)
+}
+
+func existingStartDirectory(startPath string) string {
+	if startPath == "" {
+		return ""
+	}
+	info, err := os.Stat(startPath)
+	if err != nil {
+		return ""
+	}
+	if !info.IsDir() {
+		return filepath.Dir(startPath)
+	}
+	return startPath
 }
 
 func normalizePath(pathValue string) string {
@@ -168,8 +265,11 @@ func normalizePath(pathValue string) string {
 		absolutePath = pathValue
 	}
 
-	normalized := filepath.ToSlash(absolutePath)
-	return strings.TrimRight(normalized, "/")
+	normalized := filepath.ToSlash(filepath.Clean(absolutePath))
+	if runtime.GOOS == "windows" {
+		normalized = strings.ToLower(normalized)
+	}
+	return normalized
 }
 
 func exists(path string) bool {

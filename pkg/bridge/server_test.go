@@ -377,3 +377,22 @@ func TestUnityReregisterAndProjectReadsAreRaceFree(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestUnityRegisterPublishesConsoleLogPath(t *testing.T) {
+	server := NewServer()
+	conn := &serverConnection{id: "unity-1"}
+	server.handleUnityRegister(conn, unityRegisterParams{
+		ProjectID:      "/repos/game",
+		ProjectName:    "Game",
+		GitRoot:        "/repos/game",
+		ConsoleLogPath: "/logs/game.log",
+	})
+
+	result := server.buildProjectsResult(false)
+	if len(result.Projects) != 1 {
+		t.Fatalf("project count = %d, want 1", len(result.Projects))
+	}
+	if got := result.Projects[0].ConsoleLogPath; got != "/logs/game.log" {
+		t.Fatalf("consoleLogPath = %q, want %q", got, "/logs/game.log")
+	}
+}
