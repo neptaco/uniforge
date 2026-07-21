@@ -72,7 +72,7 @@ func noteUnityPackageUpdates(projects []bridge.ProjectInfo, latestVersion string
 			continue
 		}
 		note(
-			"Unity package update available for %s: %s -> %s (see uniforge-unity releases)",
+			"Unity package update available for %s: %s -> %s (see uniforge-unity tags)",
 			project.Name,
 			project.PackageVersion,
 			latestVersion,

@@ -30,6 +30,8 @@ const (
 )
 
 var (
+	packageAddTag        string
+	packageAddYes        bool
 	packageUpdateVersion string
 	packageUpdateNoWait  bool
 
@@ -38,7 +40,7 @@ var (
 
 var packageCmd = &cobra.Command{
 	Use:   "package",
-	Short: "Manage the UniForge Unity package",
+	Short: "Manage Unity project packages",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
@@ -51,6 +53,13 @@ var packageUpdateCmd = &cobra.Command{
 	RunE:  runPackageUpdate,
 }
 
+var packageAddCmd = &cobra.Command{
+	Use:   "add [project] <package-source>",
+	Short: "Add a Git package to a Unity project",
+	Args:  cobra.RangeArgs(1, 2),
+	RunE:  runPackageAdd,
+}
+
 type packageVersionResolverDeps struct {
 	prepare func(updater.AutoCheckOptions) (updater.AutoCheckDecision, error)
 	refresh func(context.Context, updater.AutoCheckOptions) error
@@ -59,32 +68,17 @@ type packageVersionResolverDeps struct {
 
 func init() {
 	rootCmd.AddCommand(packageCmd)
+	packageCmd.AddCommand(packageAddCmd)
 	packageCmd.AddCommand(packageUpdateCmd)
 
+	packageAddCmd.Flags().StringVar(&packageAddTag, "tag", "", "git tag (default: latest semantic-version tag on GitHub)")
+	packageAddCmd.Flags().BoolVarP(&packageAddYes, "yes", "y", false, "skip the interactive confirmation")
 	packageUpdateCmd.Flags().StringVar(&packageUpdateVersion, "version", "", "target package version (X.Y.Z)")
 	packageUpdateCmd.Flags().BoolVar(&packageUpdateNoWait, "no-wait", false, "return after the package update starts")
 }
 
 func runPackageUpdate(cmd *cobra.Command, args []string) error {
-	versionOptions := updater.AutoCheckOptions{}
-	if strings.TrimSpace(packageUpdateVersion) == "" {
-		var err error
-		versionOptions, err = unityPackageAutoCheckOptions()
-		if err != nil {
-			return fmt.Errorf("locate Unity package update cache: %w", err)
-		}
-	}
-
-	targetVersion, err := resolvePackageUpdateVersion(
-		cmd.Context(),
-		packageUpdateVersion,
-		versionOptions,
-		packageVersionResolverDeps{
-			prepare: updater.PrepareUnityPackageAutoCheck,
-			refresh: updater.RefreshUnityPackageAutoCheck,
-			read:    updater.ReadUnityPackageLatestVersion,
-		},
-	)
+	targetVersion, err := resolveRequestedPackageVersion(cmd.Context(), packageUpdateVersion)
 	if err != nil {
 		return err
 	}
@@ -140,6 +134,28 @@ func runPackageUpdate(cmd *cobra.Command, args []string) error {
 		targetVersion,
 	)
 	return err
+}
+
+func resolveRequestedPackageVersion(ctx context.Context, requestedVersion string) (string, error) {
+	versionOptions := updater.AutoCheckOptions{}
+	if strings.TrimSpace(requestedVersion) == "" {
+		var err error
+		versionOptions, err = unityPackageAutoCheckOptions()
+		if err != nil {
+			return "", fmt.Errorf("locate Unity package version cache: %w", err)
+		}
+	}
+
+	return resolvePackageUpdateVersion(
+		ctx,
+		requestedVersion,
+		versionOptions,
+		packageVersionResolverDeps{
+			prepare: updater.PrepareUnityPackageAutoCheck,
+			refresh: updater.RefreshUnityPackageAutoCheck,
+			read:    updater.ReadUnityPackageLatestVersion,
+		},
+	)
 }
 
 func recheckOfflinePackageConnection(
@@ -498,7 +514,7 @@ func writeFileAtomically(path string, data []byte) error {
 		return err
 	}
 
-	temp, err := os.CreateTemp(filepath.Dir(path), ".package-update-*")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".package-*")
 	if err != nil {
 		return err
 	}

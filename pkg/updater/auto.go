@@ -17,7 +17,7 @@ const (
 	autoStateSchemaVersion = 1
 
 	// UnityPackageUpdateCacheFilename is the cache file used for Unity package
-	// release checks.
+	// version-tag checks.
 	UnityPackageUpdateCacheFilename = "unity-package-update-check.json"
 	defaultUnityPackageAPIBase      = "https://api.github.com/repos/neptaco/uniforge-unity"
 )
@@ -66,6 +66,7 @@ type autoCheckTarget struct {
 	requireCurrentVersion bool
 	includeNotice         bool
 	stripVersionPrefix    bool
+	resolveLatest         func(context.Context, Options) (string, error)
 }
 
 var (
@@ -77,6 +78,7 @@ var (
 	unityPackageAutoCheckTarget = autoCheckTarget{
 		defaultAPIBase:     defaultUnityPackageAPIBase,
 		stripVersionPrefix: true,
+		resolveLatest:      resolveLatestUnityPackageTag,
 	}
 )
 
@@ -86,7 +88,7 @@ func PrepareAutoCheck(opts AutoCheckOptions) (AutoCheckDecision, error) {
 	return prepareAutoCheck(opts, cliAutoCheckTarget)
 }
 
-// PrepareUnityPackageAutoCheck reads the cached Unity package release and
+// PrepareUnityPackageAutoCheck reads the cached Unity package version and
 // atomically claims a refresh when it is due. It never performs network I/O.
 func PrepareUnityPackageAutoCheck(opts AutoCheckOptions) (AutoCheckDecision, error) {
 	return prepareAutoCheck(opts, unityPackageAutoCheckTarget)
@@ -134,7 +136,7 @@ func RefreshAutoCheck(ctx context.Context, opts AutoCheckOptions) error {
 	return refreshAutoCheck(ctx, opts, cliAutoCheckTarget)
 }
 
-// RefreshUnityPackageAutoCheck fetches the latest uniforge-unity release and
+// RefreshUnityPackageAutoCheck fetches the latest uniforge-unity version tag and
 // stores its version without a leading v for a later, network-free read.
 func RefreshUnityPackageAutoCheck(ctx context.Context, opts AutoCheckOptions) error {
 	return refreshAutoCheck(ctx, opts, unityPackageAutoCheckTarget)
@@ -158,7 +160,11 @@ func refreshAutoCheck(ctx context.Context, opts AutoCheckOptions, checkTarget au
 	if opts.HTTPClient != nil {
 		updaterOpts.HTTPClient = opts.HTTPClient
 	}
-	latestVersion, fetchErr := resolveVersion(ctx, updaterOpts)
+	resolveLatest := resolveVersion
+	if checkTarget.resolveLatest != nil {
+		resolveLatest = checkTarget.resolveLatest
+	}
+	latestVersion, fetchErr := resolveLatest(ctx, updaterOpts)
 	if fetchErr == nil {
 		latestVersion = checkTarget.cachedVersion(latestVersion)
 	}
@@ -183,6 +189,47 @@ func refreshAutoCheck(ctx context.Context, opts AutoCheckOptions, checkTarget au
 		return err
 	}
 	return fetchErr
+}
+
+func resolveLatestUnityPackageTag(ctx context.Context, opts Options) (string, error) {
+	return ResolveLatestGitHubTag(ctx, opts.APIBase, opts.HTTPClient)
+}
+
+// ResolveLatestGitHubTag returns the highest semantic-version tag from a
+// GitHub repository API base such as https://api.github.com/repos/owner/repo.
+func ResolveLatestGitHubTag(ctx context.Context, apiBase string, client *http.Client) (string, error) {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	body, err := download(
+		ctx,
+		client,
+		strings.TrimRight(apiBase, "/")+"/tags?per_page=100",
+	)
+	if err != nil {
+		return "", fmt.Errorf("resolve latest package tag: %w", err)
+	}
+
+	var tags []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &tags); err != nil {
+		return "", fmt.Errorf("decode package tags: %w", err)
+	}
+
+	latestVersion := ""
+	for _, tag := range tags {
+		if !validVersion(tag.Name) {
+			continue
+		}
+		if latestVersion == "" || IsNewerVersion(tag.Name, latestVersion) {
+			latestVersion = tag.Name
+		}
+	}
+	if latestVersion == "" {
+		return "", fmt.Errorf("package tags did not contain a vX.Y.Z version")
+	}
+	return latestVersion, nil
 }
 
 // ReadUnityPackageLatestVersion reads the cached Unity package release without

@@ -33,18 +33,18 @@ func TestUnityPackageVersionProviderReturnsCachedValueBeforeRefresh(t *testing.T
 
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/releases/latest" {
+		if r.URL.Path != "/tags" {
 			http.NotFound(w, r)
 			return
 		}
 		if requests.Add(1) == 1 {
-			_, _ = w.Write([]byte(`{"tag_name":"v0.11.0"}`))
+			_, _ = w.Write([]byte(`[{"name":"v0.11.0"}]`))
 			return
 		}
 
 		close(refreshStarted)
 		<-releaseRefresh
-		_, _ = w.Write([]byte(`{"tag_name":"v0.12.0"}`))
+		_, _ = w.Write([]byte(`[{"name":"v0.12.0"}]`))
 	}))
 	defer func() {
 		releaseOnce.Do(func() { close(releaseRefresh) })

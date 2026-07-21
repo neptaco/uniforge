@@ -1,40 +1,103 @@
 # UniForge
 
-Command-line tools and local automation for Unity development. Build, test, and manage Unity projects with simple commands. Includes a local daemon for real-time integration with running Unity Editors.
+UniForge is a command-line tool for Unity development. With the Unity package installed, you can inspect and change an open Unity Editor from the terminal. When the Editor is closed, you can compile projects and run tests in batch mode.
 
-## Features
+## What You Can Do
 
-- 🖥️ **Cross-platform** - Same commands work on macOS, Windows, Linux
-- 🧪 **Test Runner** - Run EditMode/PlayMode tests with XML results
-- 🛠️ **Daemon + Tool system** - Local daemon connects to running Unity Editors for real-time tool execution
-- 📦 **Editor management** - Install Unity versions via Unity Hub CLI
-- 📁 **Project management** - Browse and open Unity Hub projects with TUI or CLI
-- 📋 **Meta file check** - Detect missing .meta files and duplicate GUIDs
-- 🤖 **CI-friendly** - GitHub Actions annotations, log grouping, noise filtering
-- 🔑 **License management** - Activate/return licenses for CI runners
+- Work with an open Editor: inspect scenes, change GameObjects and components, control Play Mode, and run tests.
+- Compile and test projects with the Editor closed.
+- Check `.meta` files for missing files, orphan files, and duplicate GUIDs.
+- Read Unity logs and diagnose stale runtime state.
+- Read tool results as YAML, or request JSON for scripts and CI.
+- Install the included skill so supported coding agents can follow the same UniForge workflow.
+- Install Unity versions and open Unity Hub projects when needed.
+- Use the same commands on macOS, Windows, and Linux.
 
 ## Quick Start
 
+To use UniForge with an open Unity Editor, first install the CLI. On macOS or Linux:
+
 ```bash
-# Install uniforge
 curl -fsSL https://github.com/neptaco/uniforge/releases/latest/download/install.sh | sh
-
-# Install the Unity Editor version your project needs
-uniforge editor install -p .
-
-# Compile and run EditMode tests (Unity Editor closed)
-uniforge compile .
-uniforge test . --platform editmode
 ```
 
-With the Unity Editor open, the daemon enables real-time tool execution:
+Next, move to the Unity project root—the directory that contains `Assets`, `Packages`, and `ProjectSettings`:
 
 ```bash
-uniforge daemon start
-uniforge tool call editor-state
+cd /path/to/MyUnityProject
 ```
 
-See [Usage](#usage) for the full command reference and [GitHub Actions](#github-actions) for CI setup.
+Then add the [UniForge Unity package](https://github.com/neptaco/uniforge-unity):
+
+```bash
+uniforge package add neptaco/uniforge-unity/Packages/dev.crysta.uniforge
+```
+
+When the project argument is omitted, UniForge detects the Unity project containing the current directory. The GitHub package source is expanded to an HTTPS Git URL and added to that project's `Packages/manifest.json`. When `--tag` is omitted, UniForge selects the highest semantic-version tag from the repository.
+
+To run the command from another directory, pass the project path explicitly:
+
+```bash
+uniforge package add /path/to/MyUnityProject neptaco/uniforge-unity/Packages/dev.crysta.uniforge
+```
+
+In an interactive terminal, UniForge shows the resolved project, URL, tag, package reference, and manifest path before making the change. Enter `n` to cancel, or add `--yes` to skip this confirmation. Non-interactive commands proceed without prompting so CI and coding agents do not wait for input.
+
+To pin a release:
+
+```bash
+uniforge package add neptaco/uniforge-unity/Packages/dev.crysta.uniforge --tag v0.11.0
+```
+
+You can also pass the full package URL without a fragment:
+
+```bash
+uniforge package add "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge" --tag v0.11.0
+```
+
+If you prefer the Unity interface, use **Window > Package Management > Package Manager > Install package from git URL** and paste:
+
+```text
+https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge#v0.11.0
+```
+
+Open the project in Unity. The package connects automatically, and UniForge starts its local daemon when a tool command needs it.
+
+See the connected Editor:
+
+```bash
+uniforge tool projects
+```
+
+Inspect the active scene:
+
+```bash
+uniforge tool call hierarchy
+```
+
+List the tools available in the project:
+
+```bash
+uniforge tool list
+```
+
+Check the arguments accepted by a tool:
+
+```bash
+uniforge tool describe create-gameobject
+```
+
+Windows installation is covered in [Installation](#installation). See [Live Unity tools](#live-unity-tools-editor-open) for more examples, [Batch mode](#compile-test-and-run-in-batch-mode-editor-closed) for closed-Editor commands, and [GitHub Actions](#github-actions) for CI setup.
+
+## Coding Agent Skill
+
+This repository includes a skill that teaches supported coding agents how to choose between live Editor tools and batch mode, run Unity tests, inspect logs, and diagnose common Unity problems. Install it from the root of the project where you use your coding agent:
+
+```bash
+npx skills add neptaco/uniforge --skill uniforge
+```
+
+The command requires Node.js. The installer detects supported coding agents and asks where to install the skill. Project installation is the default, so the skill can be committed and shared with the project. Add `--global` if you want it available in all of your projects.
 
 ## Installation
 
@@ -52,6 +115,12 @@ The installer verifies the release checksum and installs to `~/.local/bin` by de
 irm https://github.com/neptaco/uniforge/releases/latest/download/install.ps1 | iex
 ```
 
+After installation, verify that `uniforge` is available:
+
+```bash
+uniforge --version
+```
+
 ### Update
 
 Standalone installations can update themselves:
@@ -59,7 +128,7 @@ Standalone installations can update themselves:
 ```bash
 uniforge update
 uniforge update --check
-uniforge update --version v0.9.0
+uniforge update --version v0.11.1
 ```
 
 Package-manager and development builds are not modified by `uniforge update`.
@@ -70,7 +139,7 @@ If an update is found, a later successful interactive command prints a short
 notice to stderr. The same release is not mentioned again for seven days.
 
 Automatic checks and notices are disabled in CI and for machine-readable or
-protocol output, including JSON, YAML, TSV, `tool`, `mcp serve`, and shell
+protocol output, including JSON, YAML, TSV, `tool`, and shell
 completion. This protection still applies when notifications are configured as
 `always`, because PTYs and some process runners combine stdout and stderr.
 
@@ -108,35 +177,55 @@ eval "$(uniforge completion bash)"
 uniforge completion fish | source
 ```
 
-## Prerequisites
+## Requirements
 
-- Unity Hub installed
+- Unity 6.0 LTS or later for live Unity tools
+- The [UniForge Unity package](https://github.com/neptaco/uniforge-unity) in projects you want to control with `uniforge tool`
+- Unity UI (`com.unity.ugui`), resolved as a package dependency
+- Unity Hub only when using Editor installation or Unity Hub project-management commands
 
 ## Usage
 
-### Manage Unity Editor
+### Live Unity Tools (Editor open)
+
+Install the [Unity-side UPM package](https://github.com/neptaco/uniforge-unity), then open your project. The package connects to the local daemon automatically; `tool` commands start the daemon when needed.
 
 ```bash
-# Interactive TUI (when no version specified)
-uniforge editor install
+# See connected Unity projects
+uniforge tool projects
 
-# Install from project (auto-detect version)
-uniforge editor install -p .
+# Browse available tools
+uniforge tool list
 
-# Install specific version with modules
-uniforge editor install 2022.3.10f1 --modules ios,android
+# Inspect a tool's input schema
+uniforge tool describe gameobject
 
-# List installed Unity Editors
-uniforge editor list
+# Inspect the Editor and active scene
+uniforge tool call editor-state
+uniforge tool call hierarchy
 
-# List available versions (for scripting)
-uniforge editor available --lts --latest -o json
+# Inspect a GameObject
+uniforge tool call gameobject '{"path":"Main Camera"}'
 
-# Clear cached Unity release information
-uniforge cache clear
+# Run EditMode tests inside the open Editor
+uniforge tool call run-tests '{"mode":"EditMode"}'
 ```
 
-### Compile, Test, and Run in Batch Mode (Unity Editor closed)
+Default output is YAML. Use `-o json` when machine-readable output is needed. If multiple Editors are connected, select one with `--project <name>`.
+
+The Unity package exposes tools for scene and GameObject inspection, component editing, asset and prefab operations, Play Mode control, test execution, screenshots, input simulation, and more. Run `uniforge tool list` against your project for the authoritative list.
+
+### Update the Unity Package
+
+After the package is installed, update it from the Unity project root with:
+
+```bash
+uniforge package update
+```
+
+`package update` updates an existing UniForge package reference. Use the command in [Quick Start](#quick-start) for the first installation.
+
+### Compile, Test, and Run in Batch Mode (Editor closed)
 
 ```bash
 # Compile project
@@ -163,40 +252,39 @@ uniforge run ./MyProject --ci -- -executeMethod Build.Execute
 - `--timeout <seconds>`: Timeout in seconds
 - `-t, --timestamp`: Show timestamps
 
-### Daemon & Tool System (Unity Editor open)
-
-The daemon connects to running Unity Editors for real-time tool execution:
+### Manage Unity Editor
 
 ```bash
-# Start the local daemon
-uniforge daemon start
+# Interactive TUI (when no version specified)
+uniforge editor install
 
-# Check daemon status
-uniforge daemon status
+# Install from project (auto-detect version)
+uniforge editor install -p .
 
-# Restart daemon
-uniforge daemon restart
+# Install specific version with modules
+uniforge editor install 6000.0.40f1 --modules ios,android
 
-# List connected Unity projects
-uniforge tool projects
+# List installed Unity Editors
+uniforge editor list
 
-# List available tools
-uniforge tool list
+# List available versions (for scripting)
+uniforge editor available --lts --latest -o json
 
-# Describe tool schema
-uniforge tool describe editor-state
-
-# Execute a tool
-uniforge tool call editor-state -o json
-
-# Execute with arguments
-uniforge tool call run-tests '{"mode":"EditMode"}' -o json
-
-# Stop daemon
-uniforge daemon stop
+# Clear cached Unity release information
+uniforge cache clear
 ```
 
-Default output is YAML. Use `-o json` when machine-readable output is needed.
+Editor installation is optional if the required Unity version is already installed. These commands use Unity Hub.
+
+### Daemon Management
+
+The daemon is normally managed automatically by `tool` commands. Use these commands for diagnostics or manual lifecycle control:
+
+```bash
+uniforge daemon status
+uniforge daemon restart
+uniforge daemon stop
+```
 
 ### Check .meta File Integrity
 
