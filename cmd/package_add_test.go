@@ -20,6 +20,8 @@ func TestParsePackageSource(t *testing.T) {
 		value       string
 		wantID      string
 		wantURL     string
+		wantRepoURL string
+		wantPath    string
 		wantAPIBase string
 		wantErr     string
 	}{
@@ -28,6 +30,8 @@ func TestParsePackageSource(t *testing.T) {
 			value:       "neptaco/uniforge-unity/Packages/dev.crysta.uniforge",
 			wantID:      "dev.crysta.uniforge",
 			wantURL:     "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge",
+			wantRepoURL: "https://github.com/neptaco/uniforge-unity.git",
+			wantPath:    "Packages/dev.crysta.uniforge",
 			wantAPIBase: "https://api.github.com/repos/neptaco/uniforge-unity",
 		},
 		{
@@ -35,6 +39,8 @@ func TestParsePackageSource(t *testing.T) {
 			value:       "github:neptaco/uniforge-unity/Packages/dev.crysta.uniforge",
 			wantID:      "dev.crysta.uniforge",
 			wantURL:     "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge",
+			wantRepoURL: "https://github.com/neptaco/uniforge-unity.git",
+			wantPath:    "Packages/dev.crysta.uniforge",
 			wantAPIBase: "https://api.github.com/repos/neptaco/uniforge-unity",
 		},
 		{
@@ -42,6 +48,8 @@ func TestParsePackageSource(t *testing.T) {
 			value:       "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge",
 			wantID:      "dev.crysta.uniforge",
 			wantURL:     "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge",
+			wantRepoURL: "https://github.com/neptaco/uniforge-unity.git",
+			wantPath:    "Packages/dev.crysta.uniforge",
 			wantAPIBase: "https://api.github.com/repos/neptaco/uniforge-unity",
 		},
 		{
@@ -59,6 +67,11 @@ func TestParsePackageSource(t *testing.T) {
 			value:   "https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge#v0.11.0",
 			wantErr: "--tag",
 		},
+		{
+			name:    "rejects embedded credentials",
+			value:   "https://user:secret@github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge",
+			wantErr: "credentials",
+		},
 	}
 
 	for _, test := range tests {
@@ -73,7 +86,11 @@ func TestParsePackageSource(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parsePackageSource failed: %v", err)
 			}
-			if source.packageID != test.wantID || source.manifestURL != test.wantURL || source.githubAPIBase != test.wantAPIBase {
+			if source.packageID != test.wantID ||
+				source.manifestURL != test.wantURL ||
+				source.repositoryURL != test.wantRepoURL ||
+				source.packagePath != test.wantPath ||
+				source.githubAPIBase != test.wantAPIBase {
 				t.Fatalf("source = %#v", source)
 			}
 		})
@@ -241,7 +258,12 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command.SetIn(strings.NewReader("\n"))
 		command.SetOut(&output)
 
-		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0")
+		compatibility := packageAddCompatibility{
+			projectVersion:  "6000.0.70f1",
+			minimumUnity:    "6000.0",
+			requirementRead: true,
+		}
+		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", compatibility)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -249,7 +271,10 @@ func TestConfirmPackageAdd(t *testing.T) {
 			t.Fatal("default response did not confirm")
 		}
 		for _, value := range []string{
+			"Project Unity: 6000.0.70f1",
 			"Package: dev.crysta.uniforge",
+			"Package Unity: 6000.0 or later",
+			"Compatibility: compatible",
 			"Source: " + source.manifestURL,
 			"Tag: v0.12.0",
 			"Reference: " + source.manifestURL + "#v0.12.0",
@@ -269,7 +294,7 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command.SetIn(strings.NewReader("no\n"))
 		command.SetOut(&bytes.Buffer{})
 
-		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0")
+		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageAddCompatibility{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +310,7 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command := &cobra.Command{}
 		command.SetOut(&output)
 
-		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0")
+		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageAddCompatibility{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,7 +326,7 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command := &cobra.Command{}
 		command.SetOut(&output)
 
-		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0")
+		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageAddCompatibility{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -323,6 +348,9 @@ func TestPackageAddCommandSurface(t *testing.T) {
 	}
 	if packageAddCmd.Flags().Lookup("yes") == nil {
 		t.Fatal("package add command is missing yes flag")
+	}
+	if packageAddCmd.Flags().Lookup("force") == nil {
+		t.Fatal("package add command is missing force flag")
 	}
 	if packageAddCmd.Flags().Lookup("version") != nil {
 		t.Fatal("package add command still exposes the old version flag")

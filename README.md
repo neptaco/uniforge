@@ -33,7 +33,9 @@ Then add the [UniForge Unity package](https://github.com/neptaco/uniforge-unity)
 uniforge package add neptaco/uniforge-unity/Packages/dev.crysta.uniforge
 ```
 
-When the project argument is omitted, UniForge detects the Unity project containing the current directory. The GitHub package source is expanded to an HTTPS Git URL and added to that project's `Packages/manifest.json`. When `--tag` is omitted, UniForge selects the highest semantic-version tag from the repository.
+When the project argument is omitted, UniForge detects the Unity project containing the current directory. The GitHub package source is expanded to an HTTPS Git URL. When `--tag` is omitted, UniForge selects the highest semantic-version tag from the repository.
+
+Before changing `Packages/manifest.json`, UniForge reads the package metadata at the resolved tag and compares its minimum Unity version with the project's `ProjectSettings/ProjectVersion.txt`. Newer Unity streams, including alpha and beta releases, are accepted when their version is at least the declared minimum. An older or unparseable version stops the installation without changing the project. Use `--force` only when you intentionally want to bypass this check.
 
 To run the command from another directory, pass the project path explicitly:
 
@@ -41,7 +43,7 @@ To run the command from another directory, pass the project path explicitly:
 uniforge package add /path/to/MyUnityProject neptaco/uniforge-unity/Packages/dev.crysta.uniforge
 ```
 
-In an interactive terminal, UniForge shows the resolved project, URL, tag, package reference, and manifest path before making the change. Enter `n` to cancel, or add `--yes` to skip this confirmation. Non-interactive commands proceed without prompting so CI and coding agents do not wait for input.
+In an interactive terminal, UniForge shows the project Unity version, package compatibility, resolved URL, tag, package reference, and manifest path before making the change. Enter `n` to cancel, or add `--yes` to skip this confirmation. Non-interactive commands skip the prompt so CI and coding agents do not wait for input, but they still run the compatibility check.
 
 To pin a release:
 

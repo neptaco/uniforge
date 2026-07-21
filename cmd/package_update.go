@@ -32,6 +32,7 @@ const (
 var (
 	packageAddTag        string
 	packageAddYes        bool
+	packageAddForce      bool
 	packageUpdateVersion string
 	packageUpdateNoWait  bool
 
@@ -73,6 +74,7 @@ func init() {
 
 	packageAddCmd.Flags().StringVar(&packageAddTag, "tag", "", "git tag (default: latest semantic-version tag on GitHub)")
 	packageAddCmd.Flags().BoolVarP(&packageAddYes, "yes", "y", false, "skip the interactive confirmation")
+	packageAddCmd.Flags().BoolVar(&packageAddForce, "force", false, "add even when the Unity compatibility check fails")
 	packageUpdateCmd.Flags().StringVar(&packageUpdateVersion, "version", "", "target package version (X.Y.Z)")
 	packageUpdateCmd.Flags().BoolVar(&packageUpdateNoWait, "no-wait", false, "return after the package update starts")
 }

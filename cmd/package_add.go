@@ -37,6 +37,8 @@ var (
 type packageSource struct {
 	packageID       string
 	manifestURL     string
+	repositoryURL   string
+	packagePath     string
 	githubAPIBase   string
 	originalDisplay string
 }
@@ -64,7 +66,24 @@ func runPackageAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	confirmed, err := confirmPackageAdd(cmd, projectPath, source, tag)
+	resolvedSource, compatibility, compatibilityErr := inspectPackageAddCompatibility(
+		cmd.Context(),
+		projectPath,
+		source,
+		tag,
+	)
+	if resolvedSource.packageID != "" {
+		source = resolvedSource
+	}
+	if compatibilityErr != nil {
+		if !packageAddForce {
+			return fmt.Errorf("%w; use --force to add the package anyway", compatibilityErr)
+		}
+		compatibility.forced = true
+		compatibility.warning = compatibilityErr.Error()
+	}
+
+	confirmed, err := confirmPackageAdd(cmd, projectPath, source, tag, compatibility)
 	if err != nil {
 		return err
 	}
@@ -101,6 +120,7 @@ func confirmPackageAdd(
 	projectPath string,
 	source packageSource,
 	tag string,
+	compatibility packageAddCompatibility,
 ) (bool, error) {
 	if packageAddYes || !packageAddIsInteractive(cmd) {
 		return true, nil
@@ -112,11 +132,15 @@ func confirmPackageAdd(
 	}
 	manifestPath := filepath.Join(projectPath, "Packages", "manifest.json")
 	reference := source.manifestURL + "#" + tag
+	compatibilityText := compatibility.summary()
 	if _, err := fmt.Fprintf(
 		cmd.OutOrStdout(),
-		"Package to add:\n  Project: %s\n  Package: %s\n  Source: %s\n  Tag: %s\n  Reference: %s\n  Manifest: %s\n\nAdd this package? [Y/n]: ",
+		"Package to add:\n  Project: %s\n  Project Unity: %s\n  Package: %s\n  Package Unity: %s\n  Compatibility: %s\n  Source: %s\n  Tag: %s\n  Reference: %s\n  Manifest: %s\n\nAdd this package? [Y/n]: ",
 		projectPath,
+		compatibility.projectDisplay(),
 		source.packageID,
+		compatibility.packageDisplay(),
+		compatibilityText,
 		source.manifestURL,
 		tag,
 		reference,
@@ -169,6 +193,9 @@ func parsePackageURL(value string) (packageSource, error) {
 	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.Host == "" {
 		return packageSource{}, fmt.Errorf("package source must be an HTTPS Git URL or GitHub shorthand")
 	}
+	if parsed.User != nil {
+		return packageSource{}, fmt.Errorf("package source must not contain credentials")
+	}
 	if !strings.HasSuffix(strings.ToLower(parsed.Path), ".git") {
 		return packageSource{}, fmt.Errorf("package URL must end in .git")
 	}
@@ -181,6 +208,8 @@ func parsePackageURL(value string) (packageSource, error) {
 	source := packageSource{
 		packageID:       packageID,
 		manifestURL:     value,
+		repositoryURL:   gitRepositoryURL(parsed),
+		packagePath:     packagePath,
 		originalDisplay: value,
 	}
 	if strings.EqualFold(parsed.Hostname(), "github.com") {
@@ -215,9 +244,18 @@ func parseGitHubPackageSource(value string) (packageSource, error) {
 	return packageSource{
 		packageID:       packageID,
 		manifestURL:     fmt.Sprintf("https://github.com/%s/%s.git?path=%s", owner, repository, packagePath),
+		repositoryURL:   fmt.Sprintf("https://github.com/%s/%s.git", owner, repository),
+		packagePath:     packagePath,
 		githubAPIBase:   githubAPIBase(owner, repository),
 		originalDisplay: value,
 	}, nil
+}
+
+func gitRepositoryURL(parsed *url.URL) string {
+	repository := *parsed
+	repository.RawQuery = ""
+	repository.Fragment = ""
+	return repository.String()
 }
 
 func packageIDFromPath(packagePath string) (string, error) {
