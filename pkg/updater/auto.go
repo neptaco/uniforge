@@ -20,28 +20,41 @@ const (
 	// version-tag checks.
 	UnityPackageUpdateCacheFilename = "unity-package-update-check.json"
 	defaultUnityPackageAPIBase      = "https://api.github.com/repos/neptaco/uniforge-unity"
+	defaultUnityPackageRepository   = "https://github.com/neptaco/uniforge-unity.git"
+	defaultUnityPackagePath         = "Packages/dev.crysta.uniforge"
 )
 
 var errAutoCheckLocked = errors.New("automatic update check is already claimed")
 
 // AutoCheckOptions configures the cached, automatic update check.
 type AutoCheckOptions struct {
-	CurrentVersion   string
-	CachePath        string
-	CheckInterval    time.Duration
-	ReminderInterval time.Duration
-	RetryInterval    time.Duration
-	Now              func() time.Time
-	APIBase          string
-	HTTPClient       *http.Client
+	CurrentVersion        string
+	CachePath             string
+	CheckInterval         time.Duration
+	ReminderInterval      time.Duration
+	RetryInterval         time.Duration
+	Now                   func() time.Time
+	APIBase               string
+	HTTPClient            *http.Client
+	PackageManifestLoader PackageManifestLoader
 }
 
 // AutoCheckDecision describes work that can be done without waiting for the
 // network. CheckDue is true only for the process that claimed the next check.
 type AutoCheckDecision struct {
-	CheckDue      bool
-	LatestVersion string
-	Notice        *AutoUpdateNotice
+	CheckDue           bool
+	LatestVersion      string
+	LatestUnity        string
+	LatestUnityRelease string
+	Notice             *AutoUpdateNotice
+}
+
+// UnityPackageLatest is the cached latest package tag and its declared Unity
+// compatibility requirement. Empty compatibility fields mean unknown.
+type UnityPackageLatest struct {
+	Version      string
+	Unity        string
+	UnityRelease string
 }
 
 // AutoUpdateNotice is a cached update notification ready to be displayed.
@@ -51,22 +64,25 @@ type AutoUpdateNotice struct {
 }
 
 type autoCheckState struct {
-	SchemaVersion   int       `json:"schema_version"`
-	CheckedAt       time.Time `json:"checked_at,omitempty"`
-	LastAttemptAt   time.Time `json:"last_attempt_at,omitempty"`
-	NextAttemptAt   time.Time `json:"next_attempt_at,omitempty"`
-	LatestVersion   string    `json:"latest_version,omitempty"`
-	NotifiedVersion string    `json:"notified_version,omitempty"`
-	LastNotifiedAt  time.Time `json:"last_notified_at,omitempty"`
-	FailureCount    int       `json:"failure_count,omitempty"`
+	SchemaVersion      int       `json:"schema_version"`
+	CheckedAt          time.Time `json:"checked_at,omitempty"`
+	LastAttemptAt      time.Time `json:"last_attempt_at,omitempty"`
+	NextAttemptAt      time.Time `json:"next_attempt_at,omitempty"`
+	LatestVersion      string    `json:"latest_version,omitempty"`
+	LatestUnity        string    `json:"latest_unity,omitempty"`
+	LatestUnityRelease string    `json:"latest_unity_release,omitempty"`
+	NotifiedVersion    string    `json:"notified_version,omitempty"`
+	LastNotifiedAt     time.Time `json:"last_notified_at,omitempty"`
+	FailureCount       int       `json:"failure_count,omitempty"`
 }
 
 type autoCheckTarget struct {
-	defaultAPIBase        string
-	requireCurrentVersion bool
-	includeNotice         bool
-	stripVersionPrefix    bool
-	resolveLatest         func(context.Context, Options) (string, error)
+	defaultAPIBase         string
+	requireCurrentVersion  bool
+	includeNotice          bool
+	stripVersionPrefix     bool
+	includePackageManifest bool
+	resolveLatest          func(context.Context, Options) (string, error)
 }
 
 var (
@@ -76,9 +92,10 @@ var (
 		includeNotice:         true,
 	}
 	unityPackageAutoCheckTarget = autoCheckTarget{
-		defaultAPIBase:     defaultUnityPackageAPIBase,
-		stripVersionPrefix: true,
-		resolveLatest:      resolveLatestUnityPackageTag,
+		defaultAPIBase:         defaultUnityPackageAPIBase,
+		stripVersionPrefix:     true,
+		includePackageManifest: true,
+		resolveLatest:          resolveLatestUnityPackageTag,
 	}
 )
 
@@ -103,6 +120,10 @@ func prepareAutoCheck(opts AutoCheckOptions, target autoCheckTarget) (AutoCheckD
 	now := opts.Now()
 	state, _ := loadAutoCheckState(opts.CachePath)
 	decision := AutoCheckDecision{LatestVersion: target.cachedVersion(state.LatestVersion)}
+	if target.includePackageManifest && decision.LatestVersion != "" {
+		decision.LatestUnity = strings.TrimSpace(state.LatestUnity)
+		decision.LatestUnityRelease = strings.TrimSpace(state.LatestUnityRelease)
+	}
 	if target.includeNotice {
 		decision.Notice = cachedNotice(state, opts, now)
 	}
@@ -165,6 +186,11 @@ func refreshAutoCheck(ctx context.Context, opts AutoCheckOptions, checkTarget au
 		resolveLatest = checkTarget.resolveLatest
 	}
 	latestVersion, fetchErr := resolveLatest(ctx, updaterOpts)
+	latestUnity := ""
+	latestUnityRelease := ""
+	if fetchErr == nil && checkTarget.includePackageManifest {
+		latestUnity, latestUnityRelease, fetchErr = resolveUnityPackageRequirements(ctx, opts, latestVersion)
+	}
 	if fetchErr == nil {
 		latestVersion = checkTarget.cachedVersion(latestVersion)
 	}
@@ -181,6 +207,10 @@ func refreshAutoCheck(ctx context.Context, opts AutoCheckOptions, checkTarget au
 			state.CheckedAt = now
 			state.NextAttemptAt = now.Add(opts.CheckInterval)
 			state.LatestVersion = latestVersion
+			if checkTarget.includePackageManifest {
+				state.LatestUnity = latestUnity
+				state.LatestUnityRelease = latestUnityRelease
+			}
 			state.FailureCount = 0
 		}
 		return saveAutoCheckState(opts.CachePath, state)
@@ -193,6 +223,29 @@ func refreshAutoCheck(ctx context.Context, opts AutoCheckOptions, checkTarget au
 
 func resolveLatestUnityPackageTag(ctx context.Context, opts Options) (string, error) {
 	return ResolveLatestGitHubTag(ctx, opts.APIBase, opts.HTTPClient)
+}
+
+func resolveUnityPackageRequirements(
+	ctx context.Context,
+	opts AutoCheckOptions,
+	tag string,
+) (string, string, error) {
+	loader := opts.PackageManifestLoader
+	if loader == nil {
+		loader = LoadPackageManifestFromGit
+	}
+	manifestData, err := loader(ctx, defaultUnityPackageRepository, defaultUnityPackagePath, tag)
+	if err != nil {
+		return "", "", fmt.Errorf("load latest package manifest: %w", err)
+	}
+	var manifest struct {
+		Unity        string `json:"unity"`
+		UnityRelease string `json:"unityRelease"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return "", "", fmt.Errorf("decode latest package manifest: %w", err)
+	}
+	return strings.TrimSpace(manifest.Unity), strings.TrimSpace(manifest.UnityRelease), nil
 }
 
 // ResolveLatestGitHubTag returns the highest semantic-version tag from a
@@ -235,14 +288,29 @@ func ResolveLatestGitHubTag(ctx context.Context, apiBase string, client *http.Cl
 // ReadUnityPackageLatestVersion reads the cached Unity package release without
 // claiming or refreshing it. Invalid cached versions are treated as unknown.
 func ReadUnityPackageLatestVersion(cachePath string) (string, error) {
+	latest, err := ReadUnityPackageLatest(cachePath)
+	return latest.Version, err
+}
+
+// ReadUnityPackageLatest reads the cached Unity package release and Unity
+// requirement without claiming or refreshing it.
+func ReadUnityPackageLatest(cachePath string) (UnityPackageLatest, error) {
 	if cachePath == "" {
-		return "", nil
+		return UnityPackageLatest{}, nil
 	}
 	state, err := loadAutoCheckState(cachePath)
 	if err != nil {
-		return "", err
+		return UnityPackageLatest{}, err
 	}
-	return unityPackageAutoCheckTarget.cachedVersion(state.LatestVersion), nil
+	version := unityPackageAutoCheckTarget.cachedVersion(state.LatestVersion)
+	if version == "" {
+		return UnityPackageLatest{}, nil
+	}
+	return UnityPackageLatest{
+		Version:      version,
+		Unity:        strings.TrimSpace(state.LatestUnity),
+		UnityRelease: strings.TrimSpace(state.LatestUnityRelease),
+	}, nil
 }
 
 // RecordAutoNotification throttles repeated notifications for one release.

@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/neptaco/uniforge/pkg/updater"
 )
 
 const packageCompatibilityCheckTimeout = 60 * time.Second
@@ -126,56 +127,7 @@ func inspectPackageCompatibility(
 }
 
 func loadPackageManifestFromGit(ctx context.Context, source packageSource, tag string) ([]byte, error) {
-	if source.repositoryURL == "" || source.packagePath == "" {
-		return nil, fmt.Errorf("package source does not identify a repository and package path")
-	}
-
-	temporaryDirectory, err := os.MkdirTemp("", "uniforge-package-check-*")
-	if err != nil {
-		return nil, fmt.Errorf("create temporary package directory: %w", err)
-	}
-	defer func() { _ = os.RemoveAll(temporaryDirectory) }()
-
-	clone := exec.CommandContext(
-		ctx,
-		"git",
-		"clone",
-		"--quiet",
-		"--filter=blob:none",
-		"--no-checkout",
-		"--depth",
-		"1",
-		"--branch",
-		tag,
-		"--single-branch",
-		"--",
-		source.repositoryURL,
-		temporaryDirectory,
-	)
-	clone.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	if output, err := clone.CombinedOutput(); err != nil {
-		return nil, commandError("fetch package source", output, err)
-	}
-
-	packageManifestPath := filepath.ToSlash(filepath.Join(source.packagePath, "package.json"))
-	show := exec.CommandContext(ctx, "git", "-C", temporaryDirectory, "show", "HEAD:"+packageManifestPath)
-	manifestData, err := show.CombinedOutput()
-	if err != nil {
-		return nil, commandError("read package.json from package source", manifestData, err)
-	}
-	return manifestData, nil
-}
-
-func commandError(action string, output []byte, err error) error {
-	detail := strings.Join(strings.Fields(string(output)), " ")
-	if detail == "" {
-		return fmt.Errorf("%s: %w", action, err)
-	}
-	const maximumDetailLength = 500
-	if len(detail) > maximumDetailLength {
-		detail = detail[:maximumDetailLength] + "..."
-	}
-	return fmt.Errorf("%s: %s: %w", action, detail, err)
+	return updater.LoadPackageManifestFromGit(ctx, source.repositoryURL, source.packagePath, tag)
 }
 
 func parseProjectUnityVersion(data []byte) (parsedUnityVersion, string, error) {

@@ -3,12 +3,14 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/neptaco/uniforge/pkg/bridge"
+	"github.com/neptaco/uniforge/pkg/updater"
 	"gopkg.in/yaml.v3"
 )
 
@@ -113,7 +115,7 @@ func TestNoteUnityPackageUpdatesReportsOnlyOlderPackages(t *testing.T) {
 	}
 
 	var notes []string
-	noteUnityPackageUpdates(projects, "0.12.0", func(format string, args ...any) {
+	noteUnityPackageUpdates(projects, updater.UnityPackageLatest{Version: "0.12.0"}, func(format string, args ...any) {
 		notes = append(notes, fmt.Sprintf(format, args...))
 	})
 
@@ -125,13 +127,83 @@ func TestNoteUnityPackageUpdatesReportsOnlyOlderPackages(t *testing.T) {
 	}
 }
 
+func TestNoteUnityPackageUpdatesUsesProjectUnityCompatibility(t *testing.T) {
+	createProject := func(t *testing.T, version string) string {
+		t.Helper()
+		projectPath := t.TempDir()
+		if version == "" {
+			return projectPath
+		}
+		settingsPath := filepath.Join(projectPath, "ProjectSettings")
+		if err := os.MkdirAll(settingsPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(settingsPath, "ProjectVersion.txt"),
+			[]byte("m_EditorVersion: "+version+"\n"),
+			0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		return projectPath
+	}
+
+	tests := []struct {
+		name    string
+		project string
+		latest  updater.UnityPackageLatest
+		want    string
+	}{
+		{
+			name:    "compatible",
+			project: createProject(t, "6000.2.0f1"),
+			latest:  updater.UnityPackageLatest{Version: "0.13.0", Unity: "6000.2", UnityRelease: "0f1"},
+			want:    "Unity package update available for Game: 0.12.0 -> 0.13.0 (see uniforge-unity tags)",
+		},
+		{
+			name:    "incompatible",
+			project: createProject(t, "6000.0.70f1"),
+			latest:  updater.UnityPackageLatest{Version: "0.13.0", Unity: "6000.2", UnityRelease: "0f1"},
+			want:    "Unity package 0.13.0 available but requires Unity >= 6000.2 (project has 6000.0.70f1)",
+		},
+		{
+			name:    "unknown requirement",
+			project: createProject(t, "6000.0.70f1"),
+			latest:  updater.UnityPackageLatest{Version: "0.13.0"},
+			want:    "Unity package update available for Game: 0.12.0 -> 0.13.0 (see uniforge-unity tags)",
+		},
+		{
+			name:    "project version unreadable",
+			project: createProject(t, ""),
+			latest:  updater.UnityPackageLatest{Version: "0.13.0", Unity: "6000.2", UnityRelease: "0f1"},
+			want:    "Unity package update available for Game: 0.12.0 -> 0.13.0 (see uniforge-unity tags)",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var notes []string
+			noteUnityPackageUpdates([]bridge.ProjectInfo{{
+				ID:             test.project,
+				Name:           "Game",
+				PackageVersion: "0.12.0",
+			}}, test.latest, func(format string, args ...any) {
+				notes = append(notes, fmt.Sprintf(format, args...))
+			})
+			if want := []string{test.want}; !reflect.DeepEqual(notes, want) {
+				t.Fatalf("notes = %#v, want %#v", notes, want)
+			}
+		})
+	}
+}
+
 func TestNoteUnityPackageUpdatesSkipsUnknownLatestVersion(t *testing.T) {
 	projects := []bridge.ProjectInfo{{Name: "Game", PackageVersion: "0.11.0"}}
 
 	for _, latestVersion := range []string{"", "not-semver"} {
 		t.Run(latestVersion, func(t *testing.T) {
 			var notes []string
-			noteUnityPackageUpdates(projects, latestVersion, func(format string, args ...any) {
+			noteUnityPackageUpdates(projects, updater.UnityPackageLatest{Version: latestVersion}, func(format string, args ...any) {
 				notes = append(notes, fmt.Sprintf(format, args...))
 			})
 			if len(notes) != 0 {

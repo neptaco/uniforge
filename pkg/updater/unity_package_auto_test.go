@@ -40,6 +40,18 @@ func TestUnityPackageAutoCheckCachesLatestVersionWithoutPrefix(t *testing.T) {
 		Now:        func() time.Time { return now },
 		APIBase:    server.URL,
 		HTTPClient: server.Client(),
+		PackageManifestLoader: func(_ context.Context, repositoryURL, packagePath, tag string) ([]byte, error) {
+			if got, want := repositoryURL, "https://github.com/neptaco/uniforge-unity.git"; got != want {
+				t.Fatalf("manifest repository URL = %q, want %q", got, want)
+			}
+			if got, want := packagePath, "Packages/dev.crysta.uniforge"; got != want {
+				t.Fatalf("manifest package path = %q, want %q", got, want)
+			}
+			if got, want := tag, "v0.12.0"; got != want {
+				t.Fatalf("manifest tag = %q, want %q", got, want)
+			}
+			return []byte(`{"unity":"6000.2","unityRelease":"0f1"}`), nil
+		},
 	}
 	decision, err := PrepareUnityPackageAutoCheck(opts)
 	if err != nil {
@@ -64,13 +76,28 @@ func TestUnityPackageAutoCheckCachesLatestVersionWithoutPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cached struct {
-		LatestVersion string `json:"latest_version"`
+		LatestVersion      string `json:"latest_version"`
+		LatestUnity        string `json:"latest_unity"`
+		LatestUnityRelease string `json:"latest_unity_release"`
 	}
 	if err := json.Unmarshal(data, &cached); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := cached.LatestVersion, "0.12.0"; got != want {
 		t.Fatalf("cached latest_version = %q, want %q", got, want)
+	}
+	if got, want := cached.LatestUnity, "6000.2"; got != want {
+		t.Fatalf("cached latest_unity = %q, want %q", got, want)
+	}
+	if got, want := cached.LatestUnityRelease, "0f1"; got != want {
+		t.Fatalf("cached latest_unity_release = %q, want %q", got, want)
+	}
+	latest, err := ReadUnityPackageLatest(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (UnityPackageLatest{Version: "0.12.0", Unity: "6000.2", UnityRelease: "0f1"}); latest != want {
+		t.Fatalf("ReadUnityPackageLatest = %#v, want %#v", latest, want)
 	}
 	latestVersion, err := ReadUnityPackageLatestVersion(cachePath)
 	if err != nil {
@@ -93,6 +120,21 @@ func TestUnityPackageAutoCheckCachesLatestVersionWithoutPrefix(t *testing.T) {
 	}
 }
 
+func TestReadUnityPackageLatestSupportsCacheWithoutUnityRequirement(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), UnityPackageUpdateCacheFilename)
+	if err := os.WriteFile(cachePath, []byte(`{"schema_version":1,"latest_version":"0.12.0"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, err := ReadUnityPackageLatest(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (UnityPackageLatest{Version: "0.12.0"}); latest != want {
+		t.Fatalf("ReadUnityPackageLatest = %#v, want %#v", latest, want)
+	}
+}
+
 func TestUnityPackageAutoCheckUsesUnityRepositoryByDefault(t *testing.T) {
 	var requestedURL string
 	client := &http.Client{
@@ -111,6 +153,9 @@ func TestUnityPackageAutoCheckUsesUnityRepositoryByDefault(t *testing.T) {
 	err := RefreshUnityPackageAutoCheck(context.Background(), AutoCheckOptions{
 		CachePath:  filepath.Join(t.TempDir(), UnityPackageUpdateCacheFilename),
 		HTTPClient: client,
+		PackageManifestLoader: func(context.Context, string, string, string) ([]byte, error) {
+			return []byte(`{}`), nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +175,9 @@ func TestUnityPackageAutoCheckRejectsTagsWithoutSemanticVersion(t *testing.T) {
 		CachePath:  filepath.Join(t.TempDir(), UnityPackageUpdateCacheFilename),
 		APIBase:    server.URL,
 		HTTPClient: server.Client(),
+		PackageManifestLoader: func(context.Context, string, string, string) ([]byte, error) {
+			return []byte(`{}`), nil
+		},
 	})
 	if err == nil || !strings.Contains(err.Error(), "vX.Y.Z") {
 		t.Fatalf("error = %v, want semantic-version guidance", err)

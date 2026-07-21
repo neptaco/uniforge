@@ -49,11 +49,11 @@ func unityPackageAutoCheckOptions() (updater.AutoCheckOptions, error) {
 	}, nil
 }
 
-func newUnityPackageVersionProvider(opts updater.AutoCheckOptions) func() string {
-	return func() string {
+func newUnityPackageVersionProvider(opts updater.AutoCheckOptions) func() bridge.LatestUnityPackage {
+	return func() bridge.LatestUnityPackage {
 		decision, err := updater.PrepareUnityPackageAutoCheck(opts)
 		if err != nil {
-			return ""
+			return bridge.LatestUnityPackage{}
 		}
 		if decision.CheckDue {
 			go func() {
@@ -62,7 +62,11 @@ func newUnityPackageVersionProvider(opts updater.AutoCheckOptions) func() string
 				_ = updater.RefreshUnityPackageAutoCheck(ctx, opts)
 			}()
 		}
-		return decision.LatestVersion
+		return bridge.LatestUnityPackage{
+			Version:      decision.LatestVersion,
+			Unity:        decision.LatestUnity,
+			UnityRelease: decision.LatestUnityRelease,
+		}
 	}
 }
 
