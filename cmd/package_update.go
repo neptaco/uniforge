@@ -35,6 +35,7 @@ var (
 	packageAddForce      bool
 	packageUpdateVersion string
 	packageUpdateNoWait  bool
+	packageUpdateForce   bool
 
 	barePackageVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
 )
@@ -77,6 +78,7 @@ func init() {
 	packageAddCmd.Flags().BoolVar(&packageAddForce, "force", false, "add even when the Unity compatibility check fails")
 	packageUpdateCmd.Flags().StringVar(&packageUpdateVersion, "version", "", "target package version (X.Y.Z)")
 	packageUpdateCmd.Flags().BoolVar(&packageUpdateNoWait, "no-wait", false, "return after the package update starts")
+	packageUpdateCmd.Flags().BoolVar(&packageUpdateForce, "force", false, "update even when the Unity compatibility check fails")
 }
 
 func runPackageUpdate(cmd *cobra.Command, args []string) error {
@@ -127,7 +129,7 @@ func runPackageUpdate(cmd *cobra.Command, args []string) error {
 		return updateConnectedPackage(cmd, client, connectedProject, targetVersion)
 	}
 
-	if err := updateOfflinePackageFiles(offlineProjectPath, targetVersion); err != nil {
+	if err := updateOfflinePackage(cmd, offlineProjectPath, targetVersion); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(
@@ -216,6 +218,9 @@ func updateConnectedPackage(
 			"Package is already up to date (%s)\n",
 			targetVersion,
 		)
+		return err
+	}
+	if err := enforcePackageUpdateCompatibility(cmd, project.ID, targetVersion); err != nil {
 		return err
 	}
 
@@ -374,6 +379,76 @@ func validatePackageUpdateVersion(version string) (string, error) {
 		return "", fmt.Errorf("invalid package version %q; expected X.Y.Z", version)
 	}
 	return version, nil
+}
+
+func updateOfflinePackage(cmd *cobra.Command, projectPath, targetVersion string) error {
+	if err := enforcePackageUpdateCompatibility(cmd, projectPath, targetVersion); err != nil {
+		return err
+	}
+	return updateOfflinePackageFiles(projectPath, targetVersion)
+}
+
+func enforcePackageUpdateCompatibility(cmd *cobra.Command, projectPath, targetVersion string) error {
+	err := verifyPackageUpdateCompatibility(cmd.Context(), projectPath, targetVersion)
+	if err == nil {
+		return nil
+	}
+	if !packageUpdateForce {
+		return fmt.Errorf("%w; use --force to update the package anyway", err)
+	}
+	_, writeErr := fmt.Fprintf(
+		cmd.ErrOrStderr(),
+		"Warning: Unity compatibility check failed: %v; continuing because --force was set\n",
+		err,
+	)
+	return writeErr
+}
+
+func verifyPackageUpdateCompatibility(ctx context.Context, projectPath, targetVersion string) error {
+	source, err := packageUpdateSource(projectPath)
+	if err != nil {
+		return err
+	}
+	resolvedSource, _, err := inspectPackageCompatibility(ctx, projectPath, source, "v"+targetVersion)
+	if err != nil {
+		return err
+	}
+	if resolvedSource.packageID != unityPackageID {
+		return fmt.Errorf(
+			"package at v%s declares name %q, expected %q",
+			targetVersion,
+			resolvedSource.packageID,
+			unityPackageID,
+		)
+	}
+	return nil
+}
+
+func packageUpdateSource(projectPath string) (packageSource, error) {
+	manifestPath := filepath.Join(projectPath, "Packages", "manifest.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return packageSource{}, fmt.Errorf("read %s: %w", manifestPath, err)
+	}
+
+	var manifest struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return packageSource{}, fmt.Errorf("decode Packages/manifest.json: %w", err)
+	}
+	reference, exists := manifest.Dependencies[unityPackageID]
+	if !exists {
+		return packageSource{}, fmt.Errorf("package %s is not present in Packages/manifest.json", unityPackageID)
+	}
+	if fragmentIndex := strings.IndexByte(reference, '#'); fragmentIndex >= 0 {
+		reference = reference[:fragmentIndex]
+	}
+	source, err := parsePackageSource(reference)
+	if err != nil {
+		return packageSource{}, fmt.Errorf("read package %s source: %w", unityPackageID, err)
+	}
+	return source, nil
 }
 
 func rewritePackageManifestVersion(data []byte, targetVersion string) ([]byte, error) {

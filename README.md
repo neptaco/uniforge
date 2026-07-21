@@ -225,7 +225,7 @@ After the package is installed, update it from the Unity project root with:
 uniforge package update
 ```
 
-`package update` updates an existing UniForge package reference. Use the command in [Quick Start](#quick-start) for the first installation.
+`package update` updates an existing UniForge package reference. Before asking an open Editor to update—or changing `Packages/manifest.json` while the Editor is closed—it checks the target release's minimum Unity version against the project. Later Unity streams, including alpha and beta releases, are accepted when they meet the declared minimum. If the check fails or cannot be completed, no update starts; use `--force` only when you intentionally want to bypass the check. Use the command in [Quick Start](#quick-start) for the first installation.
 
 ### Compile, Test, and Run in Batch Mode (Editor closed)
 

@@ -115,7 +115,7 @@ func TestUnityCompatibilityComparison(t *testing.T) {
 	}
 }
 
-func TestInspectPackageAddCompatibility(t *testing.T) {
+func TestInspectPackageCompatibility(t *testing.T) {
 	projectPath := t.TempDir()
 	projectSettingsPath := filepath.Join(projectPath, "ProjectSettings")
 	if err := os.MkdirAll(projectSettingsPath, 0o755); err != nil {
@@ -129,16 +129,16 @@ func TestInspectPackageAddCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	originalLoader := packageAddManifestLoader
-	t.Cleanup(func() { packageAddManifestLoader = originalLoader })
+	originalLoader := packageManifestLoader
+	t.Cleanup(func() { packageManifestLoader = originalLoader })
 	source := packageSource{packageID: "folder-name"}
 
 	t.Run("uses the package manifest name and accepts a supported project", func(t *testing.T) {
-		packageAddManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
+		packageManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
 			return []byte(`{"name":"com.example.real-name","unity":"6000.0"}`), nil
 		}
 
-		resolved, compatibility, err := inspectPackageAddCompatibility(
+		resolved, compatibility, err := inspectPackageCompatibility(
 			context.Background(), projectPath, source, "v1.0.0",
 		)
 		if err != nil {
@@ -153,11 +153,11 @@ func TestInspectPackageAddCompatibility(t *testing.T) {
 	})
 
 	t.Run("rejects a project below the package minimum", func(t *testing.T) {
-		packageAddManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
+		packageManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
 			return []byte(`{"name":"com.example.package","unity":"6000.1"}`), nil
 		}
 
-		_, compatibility, err := inspectPackageAddCompatibility(
+		_, compatibility, err := inspectPackageCompatibility(
 			context.Background(), projectPath, source, "v1.0.0",
 		)
 		if err == nil || !strings.Contains(err.Error(), "requires Unity 6000.1") {
@@ -169,11 +169,11 @@ func TestInspectPackageAddCompatibility(t *testing.T) {
 	})
 
 	t.Run("accepts a package without a declared minimum", func(t *testing.T) {
-		packageAddManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
+		packageManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
 			return []byte(`{"name":"com.example.package"}`), nil
 		}
 
-		_, compatibility, err := inspectPackageAddCompatibility(
+		_, compatibility, err := inspectPackageCompatibility(
 			context.Background(), projectPath, source, "v1.0.0",
 		)
 		if err != nil {
@@ -192,11 +192,11 @@ func TestInspectPackageAddCompatibility(t *testing.T) {
 		); err != nil {
 			t.Fatal(err)
 		}
-		packageAddManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
+		packageManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
 			return []byte(`{"name":"dev.crysta.uniforge","unity":"6000.0","unityRelease":"0f1"}`), nil
 		}
 
-		_, compatibility, err := inspectPackageAddCompatibility(
+		_, compatibility, err := inspectPackageCompatibility(
 			context.Background(), projectPath, source, "v1.0.0",
 		)
 		if err != nil {
@@ -265,15 +265,15 @@ func TestRunPackageAddCompatibilityGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	originalLoader := packageAddManifestLoader
+	originalLoader := packageManifestLoader
 	originalTag := packageAddTag
 	originalForce := packageAddForce
 	t.Cleanup(func() {
-		packageAddManifestLoader = originalLoader
+		packageManifestLoader = originalLoader
 		packageAddTag = originalTag
 		packageAddForce = originalForce
 	})
-	packageAddManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
+	packageManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
 		return []byte(`{"name":"dev.crysta.uniforge","unity":"6000.0","unityRelease":"0f1"}`), nil
 	}
 	packageAddTag = "v1.0.0"
@@ -308,7 +308,7 @@ func TestRunPackageAddCompatibilityGate(t *testing.T) {
 }
 
 func TestForcedCompatibilitySummary(t *testing.T) {
-	compatibility := packageAddCompatibility{
+	compatibility := packageCompatibility{
 		forced:  true,
 		warning: "project version is unknown",
 	}

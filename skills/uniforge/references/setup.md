@@ -59,6 +59,14 @@ https://github.com/neptaco/uniforge-unity.git?path=Packages/dev.crysta.uniforge#
 
 Pin the `#tag` to the latest version from https://github.com/neptaco/uniforge-unity/tags.
 
+For a project that already has UniForge installed, update from the project root:
+
+```bash
+uniforge package update
+```
+
+The update command performs the same minimum Unity version check before asking a connected Editor to update or changing the manifest offline. If the target package is incompatible or its metadata cannot be checked, the project is left unchanged. Use `--force` only for an intentional bypass.
+
 Once installed, an open Unity Editor connects to the local daemon automatically. Verify with:
 
 ```bash

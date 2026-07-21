@@ -258,7 +258,7 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command.SetIn(strings.NewReader("\n"))
 		command.SetOut(&output)
 
-		compatibility := packageAddCompatibility{
+		compatibility := packageCompatibility{
 			projectVersion:  "6000.0.70f1",
 			minimumUnity:    "6000.0",
 			requirementRead: true,
@@ -294,7 +294,7 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command.SetIn(strings.NewReader("no\n"))
 		command.SetOut(&bytes.Buffer{})
 
-		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageAddCompatibility{})
+		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageCompatibility{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -310,7 +310,7 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command := &cobra.Command{}
 		command.SetOut(&output)
 
-		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageAddCompatibility{})
+		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageCompatibility{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -326,7 +326,7 @@ func TestConfirmPackageAdd(t *testing.T) {
 		command := &cobra.Command{}
 		command.SetOut(&output)
 
-		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageAddCompatibility{})
+		confirmed, err := confirmPackageAdd(command, ".", source, "v0.12.0", packageCompatibility{})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -20,7 +20,7 @@ var (
 	unityMajorMinorPattern     = regexp.MustCompile(`^(\d+)\.(\d+)$`)
 	unityFullVersionPattern    = regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)([abfp])(\d+)$`)
 	unityReleasePattern        = regexp.MustCompile(`^(\d+)([abfp])(\d+)$`)
-	packageAddManifestLoader   = loadPackageManifestFromGit
+	packageManifestLoader      = loadPackageManifestFromGit
 )
 
 type packageManifestCompatibility struct {
@@ -29,7 +29,7 @@ type packageManifestCompatibility struct {
 	UnityRelease string `json:"unityRelease"`
 }
 
-type packageAddCompatibility struct {
+type packageCompatibility struct {
 	projectVersion  string
 	minimumUnity    string
 	requirementRead bool
@@ -37,14 +37,14 @@ type packageAddCompatibility struct {
 	warning         string
 }
 
-func (compatibility packageAddCompatibility) projectDisplay() string {
+func (compatibility packageCompatibility) projectDisplay() string {
 	if compatibility.projectVersion == "" {
 		return "unknown"
 	}
 	return compatibility.projectVersion
 }
 
-func (compatibility packageAddCompatibility) packageDisplay() string {
+func (compatibility packageCompatibility) packageDisplay() string {
 	if !compatibility.requirementRead {
 		return "unknown"
 	}
@@ -54,7 +54,7 @@ func (compatibility packageAddCompatibility) packageDisplay() string {
 	return compatibility.minimumUnity + " or later"
 }
 
-func (compatibility packageAddCompatibility) summary() string {
+func (compatibility packageCompatibility) summary() string {
 	if compatibility.forced {
 		if compatibility.warning == "" {
 			return "check skipped (--force)"
@@ -72,13 +72,13 @@ type parsedUnityVersion struct {
 	channelVersion int
 }
 
-func inspectPackageAddCompatibility(
+func inspectPackageCompatibility(
 	ctx context.Context,
 	projectPath string,
 	source packageSource,
 	tag string,
-) (packageSource, packageAddCompatibility, error) {
-	compatibility := packageAddCompatibility{}
+) (packageSource, packageCompatibility, error) {
+	compatibility := packageCompatibility{}
 	projectVersionPath := filepath.Join(projectPath, "ProjectSettings", "ProjectVersion.txt")
 	projectVersionData, err := os.ReadFile(projectVersionPath)
 	if err != nil {
@@ -92,18 +92,18 @@ func inspectPackageAddCompatibility(
 
 	checkContext, cancel := context.WithTimeout(ctx, packageCompatibilityCheckTimeout)
 	defer cancel()
-	manifestData, err := packageAddManifestLoader(checkContext, source, tag)
+	manifestData, err := packageManifestLoader(checkContext, source, tag)
 	if err != nil {
 		return source, compatibility, fmt.Errorf("verify package manifest: %w", err)
 	}
 
 	var manifest packageManifestCompatibility
 	if err := json.Unmarshal(manifestData, &manifest); err != nil {
-		return source, packageAddCompatibility{}, fmt.Errorf("decode package.json: %w", err)
+		return source, packageCompatibility{}, fmt.Errorf("decode package.json: %w", err)
 	}
 	manifest.Name = strings.TrimSpace(manifest.Name)
 	if manifest.Name == "" {
-		return source, packageAddCompatibility{}, fmt.Errorf("package.json does not declare a package name")
+		return source, packageCompatibility{}, fmt.Errorf("package.json does not declare a package name")
 	}
 	source.packageID = manifest.Name
 

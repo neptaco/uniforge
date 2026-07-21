@@ -66,7 +66,7 @@ func runPackageAdd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	resolvedSource, compatibility, compatibilityErr := inspectPackageAddCompatibility(
+	resolvedSource, compatibility, compatibilityErr := inspectPackageCompatibility(
 		cmd.Context(),
 		projectPath,
 		source,
@@ -120,7 +120,7 @@ func confirmPackageAdd(
 	projectPath string,
 	source packageSource,
 	tag string,
-	compatibility packageAddCompatibility,
+	compatibility packageCompatibility,
 ) (bool, error) {
 	if packageAddYes || !packageAddIsInteractive(cmd) {
 		return true, nil

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/neptaco/uniforge/pkg/bridge"
 	"github.com/neptaco/uniforge/pkg/updater"
+	"github.com/spf13/cobra"
 )
 
 func TestRewritePackageManifestVersion(t *testing.T) {
@@ -296,6 +298,92 @@ func TestUpdateOfflinePackageFiles(t *testing.T) {
 	})
 }
 
+func TestPackageUpdateSourceUsesInstalledGitReference(t *testing.T) {
+	projectPath, _ := createOfflinePackageTestProject(t)
+
+	source, err := packageUpdateSource(projectPath)
+	if err != nil {
+		t.Fatalf("packageUpdateSource failed: %v", err)
+	}
+	if got, want := source.repositoryURL, "https://github.com/neptaco/uniforge-unity.git"; got != want {
+		t.Fatalf("repository URL = %q, want %q", got, want)
+	}
+	if got, want := source.packagePath, "Packages/dev.crysta.uniforge"; got != want {
+		t.Fatalf("package path = %q, want %q", got, want)
+	}
+}
+
+func TestUpdateOfflinePackageChecksUnityCompatibilityBeforeWriting(t *testing.T) {
+	projectPath, manifestPath := createOfflinePackageTestProject(t)
+	projectVersionPath := filepath.Join(projectPath, "ProjectSettings", "ProjectVersion.txt")
+	if err := os.WriteFile(projectVersionPath, []byte("m_EditorVersion: 2022.3.62f1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	originalManifest := mustReadFile(t, manifestPath)
+
+	originalLoader := packageManifestLoader
+	originalForce := packageUpdateForce
+	t.Cleanup(func() {
+		packageManifestLoader = originalLoader
+		packageUpdateForce = originalForce
+	})
+	var loadedTag string
+	packageManifestLoader = func(_ context.Context, source packageSource, tag string) ([]byte, error) {
+		loadedTag = tag
+		if got, want := source.packagePath, "Packages/dev.crysta.uniforge"; got != want {
+			t.Fatalf("package path = %q, want %q", got, want)
+		}
+		return []byte(`{"name":"dev.crysta.uniforge","unity":"6000.0","unityRelease":"0f1"}`), nil
+	}
+	packageUpdateForce = false
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	err := updateOfflinePackage(cmd, projectPath, "0.12.0")
+	if err == nil || !strings.Contains(err.Error(), "requires Unity 6000.0.0f1 or later") {
+		t.Fatalf("updateOfflinePackage error = %v, want Unity compatibility error", err)
+	}
+	if loadedTag != "v0.12.0" {
+		t.Fatalf("loaded tag = %q, want %q", loadedTag, "v0.12.0")
+	}
+	if got := mustReadFile(t, manifestPath); string(got) != string(originalManifest) {
+		t.Fatalf("manifest changed after compatibility failure: got %q, want %q", got, originalManifest)
+	}
+}
+
+func TestUpdateOfflinePackageForceBypassesCompatibilityFailure(t *testing.T) {
+	projectPath, manifestPath := createOfflinePackageTestProject(t)
+	projectVersionPath := filepath.Join(projectPath, "ProjectSettings", "ProjectVersion.txt")
+	if err := os.WriteFile(projectVersionPath, []byte("m_EditorVersion: 2022.3.62f1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalLoader := packageManifestLoader
+	originalForce := packageUpdateForce
+	t.Cleanup(func() {
+		packageManifestLoader = originalLoader
+		packageUpdateForce = originalForce
+	})
+	packageManifestLoader = func(context.Context, packageSource, string) ([]byte, error) {
+		return []byte(`{"name":"dev.crysta.uniforge","unity":"6000.0","unityRelease":"0f1"}`), nil
+	}
+	packageUpdateForce = true
+	var stderr bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+	cmd.SetErr(&stderr)
+
+	if err := updateOfflinePackage(cmd, projectPath, "0.12.0"); err != nil {
+		t.Fatalf("updateOfflinePackage failed with --force: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "continuing because --force was set") {
+		t.Fatalf("warning = %q, want --force explanation", stderr.String())
+	}
+	if !strings.Contains(string(mustReadFile(t, manifestPath)), "#v0.12.0") {
+		t.Fatal("manifest was not updated with --force")
+	}
+}
+
 func TestResolvePackageUpdateVersionUsesCachedVersion(t *testing.T) {
 	deps := packageVersionResolverDeps{
 		prepare: func(updater.AutoCheckOptions) (updater.AutoCheckDecision, error) {
@@ -503,8 +591,10 @@ func TestPackageUpdateCommandSurface(t *testing.T) {
 	if packageUpdateCmd.Use != "update [project]" {
 		t.Fatalf("package update use = %q", packageUpdateCmd.Use)
 	}
-	if packageUpdateCmd.Flags().Lookup("version") == nil || packageUpdateCmd.Flags().Lookup("no-wait") == nil {
-		t.Fatal("package update command is missing version or no-wait flag")
+	if packageUpdateCmd.Flags().Lookup("version") == nil ||
+		packageUpdateCmd.Flags().Lookup("no-wait") == nil ||
+		packageUpdateCmd.Flags().Lookup("force") == nil {
+		t.Fatal("package update command is missing version, no-wait, or force flag")
 	}
 }
 
@@ -522,7 +612,21 @@ func createOfflinePackageTestProject(t *testing.T) (projectPath, manifestPath st
 	t.Helper()
 	projectPath = t.TempDir()
 	packagesPath := filepath.Join(projectPath, "Packages")
+	projectSettingsPath := filepath.Join(projectPath, "ProjectSettings")
 	if err := os.MkdirAll(packagesPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(projectPath, "Assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(projectSettingsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projectSettingsPath, "ProjectVersion.txt"),
+		[]byte("m_EditorVersion: 6000.5.0f1\n"),
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	manifestPath = filepath.Join(packagesPath, "manifest.json")
