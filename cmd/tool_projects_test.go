@@ -118,7 +118,7 @@ func TestNoteUnityPackageUpdatesReportsOnlyOlderPackages(t *testing.T) {
 	})
 
 	want := []string{
-		"Unity package update available for OldGame: 0.11.0 -> 0.12.0 (see uniforge-unity releases)",
+		"Unity package update available for OldGame: 0.11.0 -> 0.12.0 (see uniforge-unity tags)",
 	}
 	if !reflect.DeepEqual(notes, want) {
 		t.Fatalf("notes = %#v, want %#v", notes, want)

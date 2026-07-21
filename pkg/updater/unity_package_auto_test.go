@@ -27,11 +27,11 @@ func TestUnityPackageAutoCheckCachesLatestVersionWithoutPrefix(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.URL.Path != "/releases/latest" {
+		if r.URL.Path != "/tags" || r.URL.Query().Get("per_page") != "100" {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{"tag_name":"v0.12.0"}`))
+		_, _ = w.Write([]byte(`[{"name":"not-a-version"},{"name":"v0.11.0"},{"name":"v0.12.0"}]`))
 	}))
 	defer server.Close()
 
@@ -102,7 +102,7 @@ func TestUnityPackageAutoCheckUsesUnityRepositoryByDefault(t *testing.T) {
 				StatusCode: http.StatusOK,
 				Status:     "200 OK",
 				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"tag_name":"v0.12.0"}`)),
+				Body:       io.NopCloser(strings.NewReader(`[{"name":"v0.12.0"}]`)),
 				Request:    request,
 			}, nil
 		}),
@@ -115,8 +115,24 @@ func TestUnityPackageAutoCheckUsesUnityRepositoryByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := requestedURL, "https://api.github.com/repos/neptaco/uniforge-unity/releases/latest"; got != want {
-		t.Fatalf("latest release URL = %q, want %q", got, want)
+	if got, want := requestedURL, "https://api.github.com/repos/neptaco/uniforge-unity/tags?per_page=100"; got != want {
+		t.Fatalf("package tags URL = %q, want %q", got, want)
+	}
+}
+
+func TestUnityPackageAutoCheckRejectsTagsWithoutSemanticVersion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"name":"main"},{"name":"preview"}]`))
+	}))
+	defer server.Close()
+
+	err := RefreshUnityPackageAutoCheck(context.Background(), AutoCheckOptions{
+		CachePath:  filepath.Join(t.TempDir(), UnityPackageUpdateCacheFilename),
+		APIBase:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "vX.Y.Z") {
+		t.Fatalf("error = %v, want semantic-version guidance", err)
 	}
 }
 
