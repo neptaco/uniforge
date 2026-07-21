@@ -29,9 +29,19 @@ type unityRegisterParams struct {
 }
 
 type unityRegisterResult struct {
-	Success              bool   `json:"success"`
-	LatestPackageVersion string `json:"latestPackageVersion,omitempty"`
-	MinPackageVersion    string `json:"minPackageVersion,omitempty"`
+	Success                   bool   `json:"success"`
+	LatestPackageVersion      string `json:"latestPackageVersion,omitempty"`
+	LatestPackageUnity        string `json:"latestPackageUnity,omitempty"`
+	LatestPackageUnityRelease string `json:"latestPackageUnityRelease,omitempty"`
+	MinPackageVersion         string `json:"minPackageVersion,omitempty"`
+}
+
+// LatestUnityPackage is the cached latest package release and its declared
+// Unity compatibility requirement.
+type LatestUnityPackage struct {
+	Version      string
+	Unity        string
+	UnityRelease string
 }
 
 type unityToolsUpdateParams struct {
@@ -104,7 +114,7 @@ type pendingRequest struct {
 
 type ServerOption func(*Server)
 
-func WithLatestUnityPackageVersionProvider(provider func() string) ServerOption {
+func WithLatestUnityPackageVersionProvider(provider func() LatestUnityPackage) ServerOption {
 	return func(server *Server) {
 		server.latestUnityPackageVersionProvider = provider
 	}
@@ -117,7 +127,7 @@ type Server struct {
 	clientConns                       map[string]*serverConnection
 	connections                       map[*serverConnection]struct{}
 	pending                           map[string]*pendingRequest
-	latestUnityPackageVersionProvider func() string
+	latestUnityPackageVersionProvider func() LatestUnityPackage
 	stopped                           bool
 	nextConnID                        uint64
 	nextRequestID                     uint64
@@ -390,7 +400,10 @@ func (s *Server) buildUnityRegisterResult() unityRegisterResult {
 		MinPackageVersion: MinRecommendedUnityPackageVersion,
 	}
 	if s.latestUnityPackageVersionProvider != nil {
-		result.LatestPackageVersion = s.latestUnityPackageVersionProvider()
+		latest := s.latestUnityPackageVersionProvider()
+		result.LatestPackageVersion = latest.Version
+		result.LatestPackageUnity = latest.Unity
+		result.LatestPackageUnityRelease = latest.UnityRelease
 	}
 	return result
 }

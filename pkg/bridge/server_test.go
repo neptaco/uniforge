@@ -446,9 +446,13 @@ func TestUnityRegisterWithoutPackageVersionOmitsItFromProjects(t *testing.T) {
 
 func TestUnityRegisterResponseIncludesLatestPackageVersion(t *testing.T) {
 	providerCalls := 0
-	server := NewServer(WithLatestUnityPackageVersionProvider(func() string {
+	server := NewServer(WithLatestUnityPackageVersionProvider(func() LatestUnityPackage {
 		providerCalls++
-		return "0.12.0"
+		return LatestUnityPackage{
+			Version:      "0.12.0",
+			Unity:        "6000.2",
+			UnityRelease: "0f1",
+		}
 	}))
 
 	result := invokeUnityRegister(t, server, unityRegisterParams{
@@ -462,6 +466,12 @@ func TestUnityRegisterResponseIncludesLatestPackageVersion(t *testing.T) {
 	}
 	if got := result["latestPackageVersion"]; got != "0.12.0" {
 		t.Fatalf("latestPackageVersion = %#v, want %q", got, "0.12.0")
+	}
+	if got := result["latestPackageUnity"]; got != "6000.2" {
+		t.Fatalf("latestPackageUnity = %#v, want %q", got, "6000.2")
+	}
+	if got := result["latestPackageUnityRelease"]; got != "0f1" {
+		t.Fatalf("latestPackageUnityRelease = %#v, want %q", got, "0f1")
 	}
 	if providerCalls != 1 {
 		t.Fatalf("provider calls = %d, want 1", providerCalls)
@@ -480,8 +490,8 @@ func TestUnityRegisterResponseOmitsUnknownPackageVersions(t *testing.T) {
 		},
 		{
 			name: "empty provider",
-			server: NewServer(WithLatestUnityPackageVersionProvider(func() string {
-				return ""
+			server: NewServer(WithLatestUnityPackageVersionProvider(func() LatestUnityPackage {
+				return LatestUnityPackage{}
 			})),
 		},
 	}
@@ -499,8 +509,35 @@ func TestUnityRegisterResponseOmitsUnknownPackageVersions(t *testing.T) {
 			if _, exists := result["latestPackageVersion"]; exists {
 				t.Fatalf("latestPackageVersion should be omitted, got %#v", result)
 			}
+			if _, exists := result["latestPackageUnity"]; exists {
+				t.Fatalf("latestPackageUnity should be omitted, got %#v", result)
+			}
+			if _, exists := result["latestPackageUnityRelease"]; exists {
+				t.Fatalf("latestPackageUnityRelease should be omitted, got %#v", result)
+			}
 			assertMinPackageVersion(t, result)
 		})
+	}
+}
+
+func TestUnityRegisterResponseOmitsUnknownUnityRequirement(t *testing.T) {
+	server := NewServer(WithLatestUnityPackageVersionProvider(func() LatestUnityPackage {
+		return LatestUnityPackage{Version: "0.12.0"}
+	}))
+
+	result := invokeUnityRegister(t, server, unityRegisterParams{
+		ProjectID:   "/repos/game",
+		ProjectName: "Game",
+	})
+
+	if got := result["latestPackageVersion"]; got != "0.12.0" {
+		t.Fatalf("latestPackageVersion = %#v, want %q", got, "0.12.0")
+	}
+	if _, exists := result["latestPackageUnity"]; exists {
+		t.Fatalf("latestPackageUnity should be omitted, got %#v", result)
+	}
+	if _, exists := result["latestPackageUnityRelease"]; exists {
+		t.Fatalf("latestPackageUnityRelease should be omitted, got %#v", result)
 	}
 }
 

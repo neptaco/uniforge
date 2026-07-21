@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/neptaco/uniforge/pkg/bridge"
 	"github.com/neptaco/uniforge/pkg/ui"
 	"github.com/neptaco/uniforge/pkg/updater"
@@ -58,26 +61,54 @@ func runToolProjects(cmd *cobra.Command, args []string) error {
 	}
 
 	if opts, err := unityPackageAutoCheckOptions(); err == nil {
-		if latestVersion, err := updater.ReadUnityPackageLatestVersion(opts.CachePath); err == nil {
-			noteUnityPackageUpdates(projectsResult.Projects, latestVersion, ui.Note)
+		if latest, err := updater.ReadUnityPackageLatest(opts.CachePath); err == nil {
+			noteUnityPackageUpdates(projectsResult.Projects, latest, ui.Note)
 		}
 	}
 
 	return writeStructuredOutput(toolProjectsOutput, buildToolProjectEntries(projectsResult.Projects))
 }
 
-func noteUnityPackageUpdates(projects []bridge.ProjectInfo, latestVersion string, note func(format string, args ...any)) {
+func noteUnityPackageUpdates(
+	projects []bridge.ProjectInfo,
+	latest updater.UnityPackageLatest,
+	note func(format string, args ...any),
+) {
 	for _, project := range projects {
-		if !updater.IsNewerVersion(latestVersion, project.PackageVersion) {
+		if !updater.IsNewerVersion(latest.Version, project.PackageVersion) {
 			continue
+		}
+		if projectVersion, projectDisplay, known := projectUnityVersion(project.ID); known {
+			minimumVersion, _, err := parsePackageMinimumUnity(latest.Unity, latest.UnityRelease)
+			if err == nil && minimumVersion != nil && compareUnityVersions(projectVersion, *minimumVersion) < 0 {
+				note(
+					"Unity package %s available but requires Unity >= %s (project has %s)",
+					latest.Version,
+					latest.Unity,
+					projectDisplay,
+				)
+				continue
+			}
 		}
 		note(
 			"Unity package update available for %s: %s -> %s (see uniforge-unity tags)",
 			project.Name,
 			project.PackageVersion,
-			latestVersion,
+			latest.Version,
 		)
 	}
+}
+
+func projectUnityVersion(projectPath string) (parsedUnityVersion, string, bool) {
+	data, err := os.ReadFile(filepath.Join(projectPath, "ProjectSettings", "ProjectVersion.txt"))
+	if err != nil {
+		return parsedUnityVersion{}, "", false
+	}
+	version, display, err := parseProjectUnityVersion(data)
+	if err != nil {
+		return parsedUnityVersion{}, "", false
+	}
+	return version, display, true
 }
 
 func buildToolProjectEntries(projects []bridge.ProjectInfo) []toolProjectEntry {
