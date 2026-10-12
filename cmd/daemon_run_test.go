@@ -26,6 +26,8 @@ func TestNewDaemonMetaUsesCLIReleaseVersion(t *testing.T) {
 }
 
 func TestUnityPackageVersionProviderReturnsCachedValueBeforeRefresh(t *testing.T) {
+	// Only stops a hung test; a slow runner must not decide the result.
+	const safetyTimeout = 30 * time.Second
 	now := time.Date(2026, 7, 20, 10, 0, 0, 0, time.UTC)
 	refreshStarted := make(chan struct{})
 	releaseRefresh := make(chan struct{})
@@ -73,23 +75,26 @@ func TestUnityPackageVersionProviderReturnsCachedValueBeforeRefresh(t *testing.T
 	result := make(chan bridge.LatestUnityPackage, 1)
 	go func() { result <- provider() }()
 
+	// The handler holds the refresh until releaseRefresh is closed, which only
+	// happens after this select. Getting the result here proves the provider
+	// returned the cached value without waiting for the network refresh.
 	select {
 	case got := <-result:
 		if want := (bridge.LatestUnityPackage{Version: "0.11.0"}); got != want {
 			t.Fatalf("provider result = %#v, want %#v", got, want)
 		}
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(safetyTimeout):
 		t.Fatal("provider blocked on the network refresh")
 	}
 
 	select {
 	case <-refreshStarted:
-	case <-time.After(time.Second):
+	case <-time.After(safetyTimeout):
 		t.Fatal("background refresh did not start")
 	}
 	releaseOnce.Do(func() { close(releaseRefresh) })
 
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(safetyTimeout)
 	for {
 		decision, err := updater.PrepareUnityPackageAutoCheck(opts)
 		if err != nil {
