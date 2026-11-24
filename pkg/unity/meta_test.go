@@ -437,3 +437,200 @@ func TestMetaChecker_Generate_WritesSupportedTemplates(t *testing.T) {
 		t.Fatalf("unexpected generated GUID %q (err=%v)", guid, err)
 	}
 }
+
+func writeProjectFile(t *testing.T, root, relPath, content string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("Failed to create directory for %s: %v", relPath, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("Failed to write %s: %v", relPath, err)
+	}
+}
+
+func writeProjectMeta(t *testing.T, root, assetRelPath, guid string) {
+	t.Helper()
+	writeProjectFile(t, root, assetRelPath+".meta", "fileFormatVersion: 2\nguid: "+guid+"\n")
+}
+
+// setupHiddenAssetProject builds a project whose only meta gaps are paths Unity
+// never imports: Packages/<name> roots, files directly under Packages/, and
+// hidden assets (names starting with '.', ending with '~', named cvs, or *.tmp).
+func setupHiddenAssetProject(t *testing.T) (*Project, string) {
+	t.Helper()
+	project, root := setupTestProject(t)
+
+	writeProjectFile(t, root, "Assets/Script.cs", "class Script {}")
+	writeProjectMeta(t, root, "Assets/Script.cs", "11111111111111111111111111111111")
+	// A sample imported from Samples~ keeps the GUIDs of the package copy.
+	writeProjectFile(t, root, "Assets/Imported.cs", "class Imported {}")
+	writeProjectMeta(t, root, "Assets/Imported.cs", "22222222222222222222222222222222")
+
+	writeProjectFile(t, root, "Assets/.hidden/b.cs", "class B {}")
+	writeProjectFile(t, root, "Assets/Docs~/readme.md", "docs")
+	writeProjectFile(t, root, "Assets/cvs/Entries", "cvs")
+	writeProjectFile(t, root, "Assets/Script.cs~", "editor backup")
+	writeProjectFile(t, root, "Assets/Untitled.tmp", "temp")
+	// Only files with the .tmp extension are hidden; a folder named *.tmp is imported.
+	writeProjectMeta(t, root, "Assets/Data.tmp", "99999999999999999999999999999999")
+	writeProjectFile(t, root, "Assets/Data.tmp/Player.cs", "class Player {}")
+	writeProjectMeta(t, root, "Assets/Data.tmp/Player.cs", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+
+	writeProjectFile(t, root, "Packages/README.md", "local packages")
+	writeProjectFile(t, root, "Packages/foo/package.json", `{"name":"foo"}`)
+	writeProjectMeta(t, root, "Packages/foo/package.json", "33333333333333333333333333333333")
+	writeProjectFile(t, root, "Packages/foo/Runtime/A.cs", "class A {}")
+	writeProjectMeta(t, root, "Packages/foo/Runtime", "44444444444444444444444444444444")
+	writeProjectMeta(t, root, "Packages/foo/Runtime/A.cs", "55555555555555555555555555555555")
+	writeProjectFile(t, root, "Packages/foo/Samples~/X/a.cs", "class SampleA {}")
+	writeProjectFile(t, root, "Packages/foo/Samples~/X/Imported.cs", "class Imported {}")
+	writeProjectMeta(t, root, "Packages/foo/Samples~/X/Imported.cs", "22222222222222222222222222222222")
+	writeProjectFile(t, root, "Packages/foo/Documentation~/index.md", "docs")
+
+	return project, root
+}
+
+func TestMetaChecker_Check_SkipsUnityHiddenAssetsAndPackageRoots(t *testing.T) {
+	project, _ := setupHiddenAssetProject(t)
+
+	result, err := NewMetaChecker(project).Check()
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+
+	if len(result.MissingMeta) != 0 {
+		t.Errorf("Expected no missing meta, got: %v", result.MissingMeta)
+	}
+	if len(result.OrphanMeta) != 0 {
+		t.Errorf("Expected no orphan meta, got: %v", result.OrphanMeta)
+	}
+	if len(result.DuplicateGUIDs) != 0 {
+		t.Errorf("Expected no duplicate GUIDs, got: %v", result.DuplicateGUIDs)
+	}
+	if result.HasErrors() {
+		t.Error("Expected HasErrors() to return false")
+	}
+}
+
+func TestMetaChecker_Generate_SkipsUnityHiddenAssetsAndPackageRoots(t *testing.T) {
+	project, root := setupHiddenAssetProject(t)
+	writeProjectFile(t, root, "Assets/Real.cs", "class Real {}")
+	writeProjectFile(t, root, "Packages/foo/Runtime/New.cs", "class New {}")
+
+	result, err := NewMetaChecker(project).Generate(false)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	want := []string{
+		filepath.Join("Assets", "Real.cs.meta"),
+		filepath.Join("Packages", "foo", "Runtime", "New.cs.meta"),
+	}
+	if strings.Join(result.CreatedMeta, ",") != strings.Join(want, ",") {
+		t.Errorf("CreatedMeta = %v, want %v", result.CreatedMeta, want)
+	}
+	if len(result.Skipped) != 0 {
+		t.Errorf("Expected no skipped assets, got: %v", result.Skipped)
+	}
+
+	for _, rel := range []string{
+		"Packages/foo.meta",
+		"Packages/README.md.meta",
+		"Packages/foo/Samples~.meta",
+		"Packages/foo/Samples~/X.meta",
+		"Packages/foo/Samples~/X/a.cs.meta",
+		"Assets/.hidden.meta",
+		"Assets/.hidden/b.cs.meta",
+		"Assets/Docs~.meta",
+		"Assets/cvs.meta",
+		"Assets/Script.cs~.meta",
+		"Assets/Untitled.tmp.meta",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("Generate should not create %s (stat err: %v)", rel, err)
+		}
+	}
+}
+
+func TestMetaChecker_Fix_KeepsMetaInsideHiddenFolders(t *testing.T) {
+	project, root := setupHiddenAssetProject(t)
+	writeProjectMeta(t, root, "Packages/foo/Samples~/X/Removed.cs", "66666666666666666666666666666666")
+	writeProjectMeta(t, root, "Assets/Orphan.cs", "77777777777777777777777777777777")
+	// Unity does not import Samples~, so a .meta next to it has no asset.
+	writeProjectMeta(t, root, "Packages/foo/Samples~", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+	deleted, err := NewMetaChecker(project).Fix(false)
+	if err != nil {
+		t.Fatalf("Fix failed: %v", err)
+	}
+
+	want := []string{
+		filepath.Join("Assets", "Orphan.cs.meta"),
+		filepath.Join("Packages", "foo", "Samples~.meta"),
+	}
+	if strings.Join(deleted, ",") != strings.Join(want, ",") {
+		t.Errorf("deleted = %v, want %v", deleted, want)
+	}
+	hiddenMeta := filepath.Join(root, "Packages", "foo", "Samples~", "X", "Removed.cs.meta")
+	if _, err := os.Stat(hiddenMeta); err != nil {
+		t.Errorf("Fix should keep .meta inside hidden folders: %v", err)
+	}
+}
+
+func TestMetaChecker_Check_StreamingAssetsKeepsDotPrefixedAssets(t *testing.T) {
+	project, root := setupTestProject(t)
+	writeProjectMeta(t, root, "Assets/StreamingAssets", "88888888888888888888888888888888")
+	writeProjectFile(t, root, "Assets/StreamingAssets/.config", "{}")
+	writeProjectFile(t, root, "Assets/StreamingAssets/.backup~/A.cs", "class A {}")
+	writeProjectFile(t, root, "Assets/StreamingAssets/.cache.tmp", "temp")
+
+	result, err := NewMetaChecker(project).Check()
+	if err != nil {
+		t.Fatalf("Check failed: %v", err)
+	}
+
+	want := []string{filepath.Join("Assets", "StreamingAssets", ".config")}
+	if strings.Join(result.MissingMeta, ",") != strings.Join(want, ",") {
+		t.Errorf("MissingMeta = %v, want %v", result.MissingMeta, want)
+	}
+}
+
+func TestIsUnityHiddenAsset(t *testing.T) {
+	tests := []struct {
+		path  string
+		isDir bool
+		want  bool
+	}{
+		{"Assets/.hidden", true, true},
+		{"Assets/.editorconfig", false, true},
+		{"Assets/Samples~", true, true},
+		{"Packages/foo/Documentation~", true, true},
+		{"Assets/Script.cs~", false, true},
+		{"Assets/cvs", true, true},
+		{"Assets/CVS", true, true},
+		{"Assets/Untitled.tmp", false, true},
+		{"Assets/Untitled.TMP", false, true},
+		{"Assets/Data.tmp", true, false},
+		{"Assets/StreamingAssets/.config", false, false},
+		{"Assets/StreamingAssets/Data/.config", false, false},
+		{"Assets/StreamingAssets/.data", true, false},
+		{"Assets/StreamingAssets/.backup~", true, true},
+		{"Assets/StreamingAssets/.cache.tmp", false, true},
+		{"Assets/StreamingAssets/Backup~", true, true},
+		{"Assets/Sub/StreamingAssets/.config", false, true},
+		{"Assets/Script.cs", false, false},
+		{"Assets/Samples~.meta", false, false},
+		{"Assets/Untitled.tmp.meta", false, false},
+		{"Assets/cvs.txt", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := isUnityHiddenAsset(filepath.FromSlash(tt.path), tt.isDir); got != tt.want {
+				t.Errorf("isUnityHiddenAsset(%q, %v) = %v, want %v", tt.path, tt.isDir, got, tt.want)
+			}
+		})
+	}
+}

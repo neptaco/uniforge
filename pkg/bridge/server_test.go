@@ -3,13 +3,18 @@ package bridge
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// testSafetyTimeout only stops a hung test; a slow runner must not decide the result.
+const testSafetyTimeout = 30 * time.Second
 
 func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 	server := NewServer()
@@ -41,18 +46,22 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 			id:   "client-1",
 			conn: daemonConn,
 		},
-		timeout: requestTimeout,
+		// Far beyond testSafetyTimeout, so restarting the timer with the request
+		// timeout would keep the timeout response below from ever arriving.
+		timeout: time.Hour,
 	}
 	unityConnection := &serverConnection{id: "unity-1"}
 	pending.targetConn = unityConnection
+	// Arm and register under the lock as handleRequest does, so the timer may
+	// fire at any point without racing the registration.
+	server.mu.Lock()
 	pending.timeoutTimer = time.AfterFunc(requestTimeout, func() {
-		_ = pending.clientConn.send(newErrorResponse(clientRequestID, ToolTimeout, "tool execution timed out", nil))
-		server.clearPending(requestID)
+		if claimed := server.claimPending(requestID, nil); claimed != nil {
+			_ = claimed.clientConn.send(newErrorResponse(clientRequestID, ToolTimeout, "tool execution timed out", nil))
+		}
 	})
-
 	server.pending[requestID] = pending
-
-	time.Sleep(30 * time.Millisecond)
+	server.mu.Unlock()
 
 	responseID, err := json.Marshal(requestID)
 	if err != nil {
@@ -69,15 +78,6 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 		Result: result,
 	})
 
-	time.Sleep(70 * time.Millisecond)
-
-	server.mu.Lock()
-	_, stillPending := server.pending[requestID]
-	server.mu.Unlock()
-	if stillPending {
-		t.Fatal("pending request should time out at the original deadline")
-	}
-
 	select {
 	case message := <-clientMessages:
 		errorPayload, ok := message["error"].(map[string]any)
@@ -87,14 +87,14 @@ func TestHandleResponsePendingKeepsOriginalTimeout(t *testing.T) {
 		if got := errorPayload["message"]; got != "tool execution timed out" {
 			t.Fatalf("timeout message = %v, want %q", got, "tool execution timed out")
 		}
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("timed out waiting for timeout response")
+	case <-time.After(testSafetyTimeout):
+		t.Fatal("pending request should time out at the original deadline")
 	}
 
 	_ = daemonConn.Close()
 	select {
 	case <-readDone:
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testSafetyTimeout):
 		t.Fatal("reader goroutine did not exit")
 	}
 }
@@ -231,7 +231,13 @@ func TestResumePendingRequestsDoesNotHoldServerLockWhileSending(t *testing.T) {
 		server.resumePendingRequests("project-1", nil)
 		close(resumeDone)
 	}()
-	time.Sleep(20 * time.Millisecond)
+
+	// Read one byte so the retry write is known to be in progress. The rest is
+	// left unread, so the write stays blocked until peer is closed.
+	_ = peer.SetReadDeadline(time.Now().Add(testSafetyTimeout))
+	if _, err := peer.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("read retry request: %v", err)
+	}
 
 	lockAcquired := make(chan int, 1)
 	go func() {
@@ -245,14 +251,14 @@ func TestResumePendingRequestsDoesNotHoldServerLockWhileSending(t *testing.T) {
 		if pendingCount != 1 {
 			t.Fatalf("pending count = %d, want 1", pendingCount)
 		}
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testSafetyTimeout):
 		t.Fatal("server lock was held by a blocked connection write")
 	}
 
 	_ = peer.Close()
 	select {
 	case <-resumeDone:
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testSafetyTimeout):
 		t.Fatal("resume did not return after connection closed")
 	}
 }
@@ -271,7 +277,7 @@ func TestStopClosesAcceptedUnregisteredConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = client.Close() }()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testSafetyTimeout)
 	for {
 		server.mu.Lock()
 		count := len(server.connections)
@@ -288,16 +294,17 @@ func TestStopClosesAcceptedUnregisteredConnection(t *testing.T) {
 	if err := server.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	_ = client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-	if _, err := client.Read(make([]byte, 1)); err == nil {
-		t.Fatal("unregistered connection remained open after Stop")
+	// Hitting the read deadline means the connection is still open.
+	_ = client.SetReadDeadline(time.Now().Add(testSafetyTimeout))
+	if _, err := client.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("unregistered connection remained open after Stop: %v", err)
 	}
 	select {
 	case err := <-serveDone:
 		if err != nil {
 			t.Fatalf("Serve returned error: %v", err)
 		}
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(testSafetyTimeout):
 		t.Fatal("Serve did not return after Stop")
 	}
 }

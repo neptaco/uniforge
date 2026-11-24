@@ -59,9 +59,12 @@ var excludedFiles = map[string]bool{
 	"packages-lock.json": true,
 }
 
-var metaRequiredRoots = map[string]bool{
-	"Assets":   true,
-	"Packages": true,
+// metaRequiredRoots maps each top-level folder whose contents Unity imports to
+// the shallowest path depth that needs a .meta file. Unity mounts each
+// Packages/<name> folder as a package root, so tracking starts inside it.
+var metaRequiredRoots = map[string]int{
+	"Assets":   2, // Assets/<asset>
+	"Packages": 3, // Packages/<name>/<asset>
 }
 
 const metaFileFormatVersion = 2
@@ -130,7 +133,7 @@ func (c *MetaChecker) Check() (*MetaCheckResult, error) {
 		}
 
 		if info.IsDir() {
-			if shouldExcludeDirectory(relPath) {
+			if shouldExcludeDirectory(relPath) || isUnityHiddenAsset(relPath, true) {
 				return filepath.SkipDir
 			}
 			if isInsideMetaRequiredRoot(relPath) {
@@ -142,7 +145,7 @@ func (c *MetaChecker) Check() (*MetaCheckResult, error) {
 		if !isInsideMetaRequiredRoot(relPath) {
 			return nil
 		}
-		if excludedFiles[filepath.Base(path)] {
+		if excludedFiles[filepath.Base(path)] || isUnityHiddenAsset(relPath, false) {
 			return nil
 		}
 
@@ -319,12 +322,34 @@ func (g *MetaGenerator) Generate(opts MetaGenerateOptions) (*MetaGenerateResult,
 }
 
 func isInsideMetaRequiredRoot(relPath string) bool {
+	parts := strings.Split(filepath.Clean(relPath), string(filepath.Separator))
+	minDepth, ok := metaRequiredRoots[parts[0]]
+	return ok && len(parts) >= minDepth
+}
+
+// isUnityHiddenAsset reports whether Unity skips relPath on import, so it never
+// gets a .meta file. See "Hidden assets" in
+// https://docs.unity3d.com/Manual/SpecialFolders.html. The manual does not
+// specify case; cvs and .tmp match case-insensitively because CVS creates
+// upper-case "CVS" folders.
+func isUnityHiddenAsset(relPath string, isDir bool) bool {
 	relPath = filepath.Clean(relPath)
-	parts := strings.SplitN(relPath, string(filepath.Separator), 2)
-	if len(parts) < 2 {
-		return false
+	name := filepath.Base(relPath)
+	if strings.HasPrefix(name, ".") && !isInsideStreamingAssets(relPath) {
+		return true
 	}
-	return metaRequiredRoots[parts[0]]
+	if strings.HasSuffix(name, "~") || strings.EqualFold(name, "cvs") {
+		return true
+	}
+	// The .tmp rule applies to files only.
+	return !isDir && strings.EqualFold(filepath.Ext(name), ".tmp")
+}
+
+// isInsideStreamingAssets reports whether relPath is below Assets/StreamingAssets,
+// where Unity imports dot-prefixed names.
+func isInsideStreamingAssets(relPath string) bool {
+	parts := strings.Split(filepath.Clean(relPath), string(filepath.Separator))
+	return len(parts) >= 3 && parts[0] == "Assets" && parts[1] == "StreamingAssets"
 }
 
 func shouldExcludeDirectory(relPath string) bool {
