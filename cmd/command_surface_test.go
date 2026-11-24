@@ -20,6 +20,7 @@ func TestCanonicalProjectCommandsAreTopLevel(t *testing.T) {
 		{name: "compile", cmd: compileCmd},
 		{name: "test", cmd: testCmd},
 		{name: "run", cmd: runCmd},
+		{name: "eval", cmd: evalCmd},
 	}
 
 	for _, test := range tests {
@@ -88,7 +89,7 @@ func TestRootHelpShowsOnlyCanonicalProjectCommands(t *testing.T) {
 		t.Fatalf("render root help: %v", err)
 	}
 	help := output.String()
-	for _, command := range []string{"clean", "doctor", "compile", "test", "run"} {
+	for _, command := range []string{"clean", "doctor", "compile", "test", "run", "eval"} {
 		if !strings.Contains(help, "  "+command+" ") {
 			t.Errorf("root help does not contain canonical command %q", command)
 		}

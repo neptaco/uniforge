@@ -56,6 +56,18 @@ uniforge tool call <tool-name> --project my-game -o json   # choose among connec
 
 Key tools: `run-tests` (waits for completion and returns results), `editor-state`, `refresh` (AssetDatabase refresh), `hierarchy`, `list-tests`.
 
+### Evaluate C# in the running Editor
+
+```bash
+uniforge eval 'return 2 + 2;'
+uniforge eval --file script.cs --dry-run
+cat script.cs | uniforge eval - -o json
+```
+
+Use `--file` for longer C# snippets. For standard input, pass `-` or pipe code without a positional argument. Use `--dry-run` to compile without executing and `-o json` to get the full result on success or failure.
+
+Eval can modify the Editor and its assets. From inside a Unity project, use `--project` explicitly to target a different connected project. `--timeout` applies separately to compilation and execution (1–600 seconds, default 30). A timeout cannot stop a synchronous infinite loop. A code that does not end with `;` is compiled as an expression first and then as statements, so a compile error from the first attempt can appear in the Unity console even when the eval succeeds.
+
 ### Editor & project management
 
 ```bash
@@ -91,9 +103,9 @@ uniforge daemon start|stop|restart|status     # rarely needed; auto-started on d
 - **Correlate test results by `run_id`.** When fetching details with `tool call test-results`, pass the `run_id` from the `run-tests` response (`'{"run_id":"<id>"}'`). A bare `test-results` returns the most recently created run (including one still running) — check `run_id`/`completed`/`running` in the response before treating it as the run you just started. If `run-tests` failed to start, no new run exists and you will see the previous one.
 - **Lost the `run-tests` response? Use `after_run_id`.** `tool call test-results '{"after_run_id":"<previous-run-id>","wait":true,"timeout":300000}'` waits for the run started after the anchor and returns its completed results — no polling loops needed. An unknown anchor errors instead of falling back to the latest run.
 - **A minimized or fully hidden editor may never start a run** (OS-level loop starvation; an unfocused-but-visible editor is fine). If a timeout says the run "has not reported starting", bring the editor forward (`osascript -e 'tell application "Unity" to activate'` on macOS) and retry.
-- **The daemon is self-managing.** `tool call`, `tool list`, and `tool projects` auto-start it (`--auto-start-daemon` defaults to true). Only reach for `daemon restart` if `tool projects` shows a stale connection.
-- **Output formats:** live-tool output defaults to YAML; pass `-o json` for machine-readable output. `project list` and `editor available` also accept `-o json` (`--output`).
-- **Timeout units differ:** `--timeout` on `compile|test|run` is in **seconds**; `tool call --timeout` is in **milliseconds** (default 300000 = 5 min). Raise it for long PlayMode suites.
+- **The daemon is self-managing.** `eval`, `tool call`, `tool list`, and `tool projects` auto-start it (`--auto-start-daemon` defaults to true). Only reach for `daemon restart` if `tool projects` shows a stale connection.
+- **Output formats:** `tool call` defaults to YAML and `eval` defaults to text. Both accept `-o json` for machine-readable output, as do `project list` and `editor available`.
+- **Timeout units differ:** `--timeout` on `compile|test|run|eval` is in **seconds**. `tool call --timeout` is in **milliseconds** (default 300000 = 5 min). Raise it for long PlayMode suites.
 - **Run `uniforge restart` from inside the project** when the Editor becomes unresponsive or stops picking up script changes. Pass a project path when running elsewhere.
 - **Use `--ci` in CI** for grouped logs, GitHub Actions annotations, and stack-trace noise filtering.
 - **Prefer root-level `test|compile|run`** — the `batch` forms remain as hidden deprecated aliases.
