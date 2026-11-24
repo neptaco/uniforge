@@ -217,6 +217,18 @@ Default output is YAML. Use `-o json` when machine-readable output is needed. If
 
 The Unity package exposes tools for scene and GameObject inspection, component editing, asset and prefab operations, Play Mode control, test execution, screenshots, input simulation, and more. Run `uniforge tool list` against your project for the authoritative list.
 
+### Evaluate C# in the Running Editor
+
+```bash
+uniforge eval 'return 2 + 2;'
+uniforge eval --file script.cs --dry-run
+cat script.cs | uniforge eval - -o json
+```
+
+Pass code as an argument, use `--file` for longer C# snippets, or pipe code to standard input with `-` or no argument. Use `--dry-run` to compile without executing. The default output is the returned value. Use `-o json` for the full result, including error details on failure.
+
+From inside a Unity project, eval requires that project to be connected. Use `--project` to target a different connected project explicitly. Eval can modify the Editor and its assets. `--timeout` sets the limit for compilation and execution separately (1–600 seconds, default 30), but it cannot stop a synchronous infinite loop. A code that does not end with `;` is compiled as an expression first and then as statements, so a compile error from the first attempt can appear in the Unity console even when the eval succeeds.
+
 ### Update the Unity Package
 
 After the package is installed, update it from the Unity project root with:
